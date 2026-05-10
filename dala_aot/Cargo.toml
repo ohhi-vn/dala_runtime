@@ -1,0 +1,23 @@
+[package]
+name = "dala_aot"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+
+[[bin]]
+name = "dala_aot"
+path = "src/main.rs"
+
+[dependencies]
+dala_runtime = { path = "../dala_runtime" }
+dala_ir = { path = "../dala_ir" }
+dala_beam_loader = { path = "../dala_beam_loader" }
+dala_codegen = { path = "../dala_codegen" }
+dala_dispatch = { path = "../dala_dispatch" }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+walkdir = "2"
+tempfile = "3"

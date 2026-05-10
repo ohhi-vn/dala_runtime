@@ -1,0 +1,16 @@
+[package]
+name = "dala_ir"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+log = "0.4"
+thiserror = "2"
+anyhow = "1"
+indexmap = "2"
+smallvec = "1"
+bitvec = "1"
+serde = { version = "1", features = ["derive"] }
+paste = "1"
+cfg-if = "1"

@@ -1,0 +1,17 @@
+[package]
+name = "dala_dispatch"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+dala_runtime = { path = "../dala_runtime" }
+dala_ir = { path = "../dala_ir" }
+dala_codegen = { path = "../dala_codegen" }
+log = "0.4"
+dashmap = "5"
+parking_lot = "0.12"
+thiserror = "2"
+anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
+cfg-if = "1"

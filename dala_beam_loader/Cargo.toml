@@ -1,0 +1,15 @@
+[package]
+name = "dala_beam_loader"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+log = "0.4"
+thiserror = "2"
+anyhow = "1"
+byteorder = "1.5"
+bitflags = "2"
+indexmap = "2"
+serde = { version = "1", features = ["derive"] }
+bincode = "1"

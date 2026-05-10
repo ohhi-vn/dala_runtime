@@ -1,0 +1,20 @@
+# --- Rust specific ---
+
+/target/
+
+# --- Cargo specific ---
+# Remove 'Cargo.lock' from this list if you are creating an executable (binary) project.
+# Keep it for library projects to ensure reproducible builds for users.
+Cargo.lock
+
+# --- Backup and temporary files ---
+**/*.rs.bk
+*.swp
+*.bak
+
+# --- IDE/Editor Specific (Optional but Recommended) ---
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db

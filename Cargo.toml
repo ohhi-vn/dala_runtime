@@ -1,0 +1,51 @@
+[workspace]
+members = [
+    "dala_aot",
+    "dala_runtime",
+    "dala_ir",
+    "dala_beam_loader",
+    "dala_codegen",
+    "dala_dispatch",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["Dala AOT Team"]
+rust-version = "1.78"
+license = "MPL-2.0"
+
+[workspace.dependencies]
+log = "0.4"
+env_logger = "0.11"
+cranelift = "0.113"
+cranelift-module = "0.113"
+cranelift-jit = "0.113"
+cranelift-native = "0.113"
+cranelift-frontend = "0.113"
+target-lexicon = "0.13"
+memoffset = "0.9"
+bitflags = "2"
+thiserror = "2"
+anyhow = "1"
+indexmap = "2"
+dashmap = "5"
+parking_lot = "0.12"
+crossbeam = "0.8"
+uuid = { version = "1", features = ["v4"] }
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+byteorder = "1.5"
+bitvec = "1"
+smallvec = "1"
+either = "1"
+itertools = "0.13"
+paste = "1"
+cfg-if = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3
