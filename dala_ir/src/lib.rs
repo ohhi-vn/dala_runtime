@@ -107,3 +107,81 @@ pub struct BlockId(pub usize);
 /// Unique identifier for an instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InstId(pub usize);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::instruction::{IRInstKind, SideEffects};
+    use crate::type_system::{IRType, TypeKind};
+
+    #[test]
+    fn test_ir_context_creation() {
+        let ctx = IRContext::new();
+        assert_eq!(ctx.functions.len(), 0);
+        assert_eq!(ctx.constants.len(), 0);
+        assert_eq!(ctx.types.len(), 0);
+    }
+
+    #[test]
+    fn test_create_function() {
+        let mut ctx = IRContext::new();
+        let int_type = ctx.create_type(IRType::new(TypeKind::Int64));
+        let func_id = ctx.create_function("test_func".to_string(), IRType::new(TypeKind::Int64));
+
+        assert_eq!(func_id.0, 0);
+        assert_eq!(ctx.functions.len(), 1);
+        assert_eq!(ctx.functions[0].name(), "test_func");
+    }
+
+    #[test]
+    fn test_side_effects_combine() {
+        let mut effects = SideEffects::NONE;
+        effects.allocates = true;
+        effects.may_raise = true;
+
+        assert!(effects.allocates);
+        assert!(effects.may_raise);
+        assert!(!effects.writes_heap);
+    }
+
+    #[test]
+    fn test_instruction_creation() {
+        let inst = IRInst::new(IRInstKind::Add);
+        assert!(inst.result.is_none());
+        assert!(inst.operands.is_empty());
+    }
+
+    #[test]
+    fn test_instruction_with_result() {
+        let val_id = ValueId(0);
+        let inst = IRInst::with_result(IRInstKind::Add, val_id);
+        assert_eq!(inst.result, Some(val_id));
+    }
+
+    #[test]
+    fn test_type_creation() {
+        let ty = IRType::new(TypeKind::Int64);
+        assert!(matches!(ty.kind, TypeKind::Int64));
+    }
+
+    #[test]
+    fn test_small_int_term() {
+        let term = Term::small(42);
+        assert!(term.is_small());
+        assert_eq!(term.unwrap_small(), 42);
+    }
+
+    #[test]
+    fn test_nil_term() {
+        let term = Term::nil();
+        assert!(term.is_nil());
+    }
+
+    #[test]
+    fn test_bool_terms() {
+        let t = Term::true_();
+        let f = Term::false_();
+        assert!(t.is_true());
+        assert!(f.is_false());
+    }
+}

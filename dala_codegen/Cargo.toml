@@ -13,6 +13,8 @@ cranelift-frontend = "0.113"
 cranelift-native = { version = "0.113", optional = true }
 cranelift-jit = { version = "0.113", optional = true }
 target-lexicon = "0.13"
+gimli = "0.28"
+object = "0.32"
 log = "0.4"
 thiserror = "2"
 anyhow = "1"

@@ -131,9 +131,5 @@ No runtime code generation needed — fully avoids RWX pages, JIT restrictions, 
 
 ## License
 
-Apache-2.0 license.
-
-## License Change
-
-This project is now licensed under the Mozilla Public License, Version 2.0 (MPL-2.0).
+This project is licensed under the Mozilla Public License, Version 2.0 (MPL-2.0).
 See the LICENSE file for details.

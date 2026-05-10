@@ -11,9 +11,9 @@ resolver = "2"
 
 [workspace.package]
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 authors = ["Dala AOT Team"]
-rust-version = "1.78"
+rust-version = "1.85"
 license = "MPL-2.0"
 
 [workspace.dependencies]
@@ -34,7 +34,10 @@ dashmap = "5"
 parking_lot = "0.12"
 crossbeam = "0.8"
 uuid = { version = "1", features = ["v4"] }
+num-bigint = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
+gimli = "0.28"
+object = "0.32"
 bincode = "1"
 byteorder = "1.5"
 bitvec = "1"

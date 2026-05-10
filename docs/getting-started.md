@@ -6,7 +6,7 @@ This guide walks you through setting up, building, and running the Dala AOT comp
 
 ### Required Tools
 
-- **Rust** (1.78 or later) — Install via [rustup](https://rustup.rs/):
+- **Rust** (1.95 or later) — Install via [rustup](https://rustup.rs/):
   ```bash
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   ```
@@ -44,8 +44,8 @@ This guide walks you through setting up, building, and running the Dala AOT comp
 ## Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/your-org/dala-aot.git
-cd dala-aot
+git clone https://github.com/manhvu/BEAM_AOT_Compiler
+cd BEAM_AOT_Compiler
 ```
 
 ## Step 2: Set Up Environment Variables

@@ -5,6 +5,7 @@
 
 use core::fmt;
 use core::hash::{Hash, Hasher};
+use num_bigint::BigInt;
 
 /// A BEAM term - the fundamental value type.
 #[repr(transparent)]
@@ -115,8 +116,20 @@ impl Term {
     }
 
     #[inline]
-    pub fn is_fun(self) -> bool {
-        self.is_boxed() && self.header_tag() == tags::HEADER_FUN
+    pub fn is_big(self) -> bool {
+        self.is_boxed()
+            && (self.header_tag() == tags::HEADER_POS_BIG
+                || self.header_tag() == tags::HEADER_NEG_BIG)
+    }
+
+    #[inline]
+    pub fn is_positive_big(self) -> bool {
+        self.is_boxed() && self.header_tag() == tags::HEADER_POS_BIG
+    }
+
+    #[inline]
+    pub fn is_negative_big(self) -> bool {
+        self.is_boxed() && self.header_tag() == tags::HEADER_NEG_BIG
     }
 
     #[inline]
@@ -281,6 +294,79 @@ impl Term {
             None
         }
     }
+
+    // --- Bignum operations ---
+
+    /// Create a bignum from a BigInt.
+    /// Returns a boxed term pointing to the heap-allocated bignum.
+    /// The bignum is stored as:
+    /// - Header word (HEADER_POS_BIG or HEADER_NEG_BIG with arity = number of 64-bit words + 1)
+    /// - Sign word (0 for positive, 1 for negative)
+    /// - magnitude words (little-endian, as per BEAM convention)
+    pub fn bigint(big: &BigInt, heap: &mut Vec<Term>) -> Option<Self> {
+        let (sign, magnitude) = big.to_bytes_le();
+        let word_count = (magnitude.len() + 7) / 8; // Round up to 64-bit words
+        let arity = word_count + 1; // +1 for sign word
+
+        // Create header
+        let header = if big.sign() == num_bigint::Sign::Minus {
+            tags::HEADER_NEG_BIG | (arity as u64)
+        } else {
+            tags::HEADER_POS_BIG | (arity as u64)
+        };
+
+        // Allocate on heap
+        heap.push(Term(header));
+
+        // Sign word
+        let sign_word = match sign {
+            num_bigint::Sign::Minus => 1u64,
+            _ => 0u64,
+        };
+        heap.push(Term(sign_word));
+
+        // Magnitude words (pad to word boundary)
+        let mut mag_bytes = magnitude.to_vec();
+        mag_bytes.resize(word_count * 8, 0u8);
+        for chunk in mag_bytes.chunks_exact(8) {
+            let word = u64::from_le_bytes([
+                chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+            ]);
+            heap.push(Term(word));
+        }
+
+        // Return boxed pointer to header
+        let ptr = heap.as_ptr() as u64;
+        Some(Term(ptr | tags::PRIMARY_TAG_BOXED))
+    }
+
+    /// Get the BigInt value from a bignum term.
+    pub fn get_bigint(self) -> Option<BigInt> {
+        if !self.is_big() {
+            return None;
+        }
+        unsafe {
+            let header_ptr = self.get_boxed_ptr() as *const u64;
+            let header = *header_ptr;
+            let arity = (header & tags::HEADER_ARITY_MASK) as usize;
+
+            // Sign word is at header + 1
+            let sign_word = *(header_ptr.add(1));
+
+            // Magnitude starts at header + 2
+            let mag_ptr = header_ptr.add(2) as *const u8;
+            let mag_len = (arity - 1) * 8; // -1 for sign word
+            let mag_bytes = std::slice::from_raw_parts(mag_ptr, mag_len);
+
+            let sign = if sign_word == 1 {
+                num_bigint::Sign::Minus
+            } else {
+                num_bigint::Sign::Plus
+            };
+
+            Some(BigInt::from_bytes_le(sign, mag_bytes))
+        }
+    }
 }
 
 impl fmt::Debug for Term {
@@ -307,11 +393,22 @@ impl fmt::Debug for Term {
                 write!(f, "float(corrupted)")
             }
         } else if self.is_boxed() {
-            write!(f, "boxed(ptr={:?}, header={:#x})", self.get_boxed_ptr(), self.header())
+            write!(
+                f,
+                "boxed(ptr={:?}, header={:#x})",
+                self.get_boxed_ptr(),
+                self.header()
+            )
         } else if self.is_pid() {
             write!(f, "pid({:#x})", self.0)
         } else if self.is_port() {
             write!(f, "port({:#x})", self.0)
+        } else if self.is_big() {
+            if let Some(big) = self.get_bigint() {
+                write!(f, "big({})", big)
+            } else {
+                write!(f, "big(corrupted)")
+            }
         } else if self.is_fun() {
             write!(f, "fun(ptr={:?})", self.get_boxed_ptr())
         } else if self.is_map() {
@@ -358,5 +455,114 @@ impl RegisterFile {
 impl Default for RegisterFile {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use num_bigint::BigInt;
+
+    #[test]
+    fn test_small_int() {
+        let term = Term::small(42);
+        assert!(term.is_small());
+        assert_eq!(term.unwrap_small(), 42);
+    }
+
+    #[test]
+    fn test_negative_small_int() {
+        let term = Term::small(-1);
+        assert!(term.is_small());
+        assert_eq!(term.unwrap_small(), -1);
+    }
+
+    #[test]
+    fn test_nil() {
+        let term = Term::nil();
+        assert!(term.is_nil());
+    }
+
+    #[test]
+    fn test_bool() {
+        assert!(Term::true_().is_true());
+        assert!(Term::false_().is_false());
+        assert_eq!(Term::bool(true), Term::true_());
+        assert_eq!(Term::bool(false), Term::false_());
+    }
+
+    #[test]
+    fn test_atom() {
+        let term = Term::atom(42);
+        assert!(term.is_atom());
+        assert_eq!(term.get_atom_index(), Some(42));
+    }
+
+    #[test]
+    fn test_bignum_positive() {
+        let big = BigInt::from(123456789012345678901234567890i128);
+        let mut heap = Vec::new();
+        let term = Term::bigint(&big, &mut heap).expect("Failed to create bignum");
+
+        assert!(term.is_big());
+        assert!(term.is_positive_big());
+        assert!(!term.is_negative_big());
+
+        let recovered = term.get_bigint().expect("Failed to get bignum");
+        assert_eq!(recovered, big);
+    }
+
+    #[test]
+    fn test_bignum_negative() {
+        let big = BigInt::from(-123456789012345678901234567890i128);
+        let mut heap = Vec::new();
+        let term = Term::bigint(&big, &mut heap).expect("Failed to create bignum");
+
+        assert!(term.is_big());
+        assert!(!term.is_positive_big());
+        assert!(term.is_negative_big());
+
+        let recovered = term.get_bigint().expect("Failed to get bignum");
+        assert_eq!(recovered, big);
+    }
+
+    #[test]
+    fn test_bignum_zero() {
+        let big = BigInt::from(0);
+        let mut heap = Vec::new();
+        let term = Term::bigint(&big, &mut heap).expect("Failed to create bignum");
+
+        assert!(term.is_big());
+        let recovered = term.get_bigint().expect("Failed to get bignum");
+        assert_eq!(recovered, big);
+    }
+
+    #[test]
+    fn test_bignum_large() {
+        // Test with a very large number that definitely exceeds 64 bits
+        let big = BigInt::parse_bytes(b"1234567890123456789012345678901234567890", 10)
+            .expect("Failed to parse big number");
+        let mut heap = Vec::new();
+        let term = Term::bigint(&big, &mut heap).expect("Failed to create bignum");
+
+        let recovered = term.get_bigint().expect("Failed to get bignum");
+        assert_eq!(recovered, big);
+    }
+
+    #[test]
+    fn test_get_bigint_on_non_big() {
+        let small = Term::small(42);
+        assert!(small.get_bigint().is_none());
+
+        let atom = Term::atom(0);
+        assert!(atom.get_bigint().is_none());
+    }
+
+    #[test]
+    fn test_register_file() {
+        let rf = RegisterFile::new();
+        assert_eq!(rf.x[0], Term::nil());
+        assert_eq!(rf.y[0], Term::nil());
+        assert_eq!(rf.f[0], 0.0f64);
     }
 }
