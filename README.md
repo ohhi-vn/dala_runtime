@@ -131,7 +131,7 @@ No runtime code generation needed — fully avoids RWX pages, JIT restrictions, 
 
 ## License
 
-Apache-2.0 / MIT dual license (same as Rust).
+Apache-2.0 license.
 
 ## License Change
 
