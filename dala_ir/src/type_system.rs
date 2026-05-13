@@ -13,9 +13,9 @@
 
 use std::fmt;
 
-/// The lattice of types in the IR.
+/// The kind of type in the IR.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum IRType {
+pub enum TypeKind {
     /// Any possible term (top of the lattice)
     Any,
     /// Bottom type (unreachable code)
@@ -24,6 +24,8 @@ pub enum IRType {
     SmallInt,
     /// Non-negative small integer
     NonNegInt,
+    /// 64-bit integer
+    Int64,
     /// Float
     Float,
     /// Atom
@@ -71,14 +73,29 @@ pub enum ConstantValue {
     False,
 }
 
+/// The IR type representation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IRType {
+    /// The kind of this type
+    pub kind: TypeKind,
+}
+
 /// The top type (any possible value).
-pub const TOP: IRType = IRType::Any;
+pub const TOP: IRType = IRType {
+    kind: TypeKind::Any,
+};
 
 /// The bottom type (unreachable code).
-pub const BOTTOM: IRType = IRType::Bottom;
+pub const BOTTOM: IRType = IRType {
+    kind: TypeKind::Bottom,
+};
 
-/// Type lattice operations.
 impl IRType {
+    /// Create a new IRType with the given kind.
+    pub fn new(kind: TypeKind) -> Self {
+        Self { kind }
+    }
+
     /// Compute the least upper bound (join) of two types.
     ///
     /// This is used when two control flow paths merge - the resulting
@@ -88,34 +105,37 @@ impl IRType {
             return self.clone();
         }
 
-        match (self, other) {
+        match (&self.kind, &other.kind) {
             // Bottom is absorbed by any type
-            (IRType::Bottom, t) | (t, IRType::Bottom) => t.clone(),
+            (TypeKind::Bottom, t) | (t, TypeKind::Bottom) => IRType::new(t.clone()),
 
             // Any absorbs everything
-            (IRType::Any, _) | (_, IRType::Any) => IRType::Any,
+            (TypeKind::Any, _) | (_, TypeKind::Any) => IRType::new(TypeKind::Any),
 
             // Same category unions
-            (IRType::SmallInt, IRType::NonNegInt) | (IRType::NonNegInt, IRType::SmallInt) => {
-                IRType::SmallInt
+            (TypeKind::SmallInt, TypeKind::NonNegInt)
+            | (TypeKind::NonNegInt, TypeKind::SmallInt) => IRType::new(TypeKind::SmallInt),
+            (TypeKind::Nil, TypeKind::Cons) | (TypeKind::Cons, TypeKind::Nil) => {
+                IRType::new(TypeKind::List)
             }
-            (IRType::Nil, IRType::Cons) | (IRType::Cons, IRType::Nil) => IRType::List,
 
             // Constant with general type
-            (IRType::Constant(_), general) | (general, IRType::Constant(_)) => general.clone(),
+            (TypeKind::Constant(_), general) | (general, TypeKind::Constant(_)) => {
+                IRType::new(general.clone())
+            }
 
             // Union types
-            (IRType::Union(a, b), c) => {
+            (TypeKind::Union(a, b), c) => {
                 let ab = a.join(b);
-                ab.join(c)
+                ab.join(&IRType::new(c.clone()))
             }
-            (c, IRType::Union(a, b)) => {
+            (c, TypeKind::Union(a, b)) => {
                 let ab = a.join(b);
-                c.join(&ab)
+                IRType::new(c.clone()).join(&ab)
             }
 
             // Default: fall back to Any
-            _ => IRType::Any,
+            _ => IRType::new(TypeKind::Any),
         }
     }
 
@@ -128,28 +148,31 @@ impl IRType {
             return self.clone();
         }
 
-        match (self, other) {
+        match (&self.kind, &other.kind) {
             // Bottom absorbs any meet
-            (IRType::Bottom, _) | (_, IRType::Bottom) => IRType::Bottom,
+            (TypeKind::Bottom, _) | (_, TypeKind::Bottom) => IRType::new(TypeKind::Bottom),
 
             // Any is neutral for meet
-            (IRType::Any, t) | (t, IRType::Any) => t.clone(),
+            (TypeKind::Any, t) | (t, TypeKind::Any) => IRType::new(t.clone()),
 
             // Constant refinement
-            (IRType::Constant(c), general) | (general, IRType::Constant(c)) => {
-                if general.contains_constant(c) {
-                    IRType::Constant(c.clone())
+            (TypeKind::Constant(c), general) | (general, TypeKind::Constant(c)) => {
+                if IRType::new(general.clone()).contains_constant(c) {
+                    IRType::new(TypeKind::Constant(c.clone()))
                 } else {
-                    IRType::Bottom
+                    IRType::new(TypeKind::Bottom)
                 }
             }
 
             // Subtype relationships
-            (IRType::Nil, IRType::List) | (IRType::List, IRType::Nil) => IRType::Nil,
-            (IRType::Cons, IRType::List) | (IRType::List, IRType::Cons) => IRType::Cons,
-            (IRType::NonNegInt, IRType::SmallInt) | (IRType::SmallInt, IRType::NonNegInt) => {
-                IRType::NonNegInt
+            (TypeKind::Nil, TypeKind::List) | (TypeKind::List, TypeKind::Nil) => {
+                IRType::new(TypeKind::Nil)
             }
+            (TypeKind::Cons, TypeKind::List) | (TypeKind::List, TypeKind::Cons) => {
+                IRType::new(TypeKind::Cons)
+            }
+            (TypeKind::NonNegInt, TypeKind::SmallInt)
+            | (TypeKind::SmallInt, TypeKind::NonNegInt) => IRType::new(TypeKind::NonNegInt),
 
             // Default: check if compatible
             _ => {
@@ -158,7 +181,7 @@ impl IRType {
                 } else if other.contains(self) {
                     self.clone()
                 } else {
-                    IRType::Bottom
+                    IRType::new(TypeKind::Bottom)
                 }
             }
         }
@@ -166,18 +189,17 @@ impl IRType {
 
     /// Check if this type contains a specific constant.
     fn contains_constant(&self, c: &ConstantValue) -> bool {
-        match (self, c) {
-            (IRType::SmallInt, ConstantValue::Int(_)) => true,
-            (IRType::NonNegInt, ConstantValue::Int(i)) => *i >= 0,
-            (IRType::Atom, ConstantValue::Atom(_)) => true,
-            (IRType::Boolean, ConstantValue::True) | (IRType::Boolean, ConstantValue::False) => {
-                true
+        match (&self.kind, c) {
+            (TypeKind::SmallInt, ConstantValue::Int(_)) => true,
+            (TypeKind::NonNegInt, ConstantValue::Int(i)) => *i >= 0,
+            (TypeKind::Atom, ConstantValue::Atom(_)) => true,
+            (TypeKind::Boolean, ConstantValue::True)
+            | (TypeKind::Boolean, ConstantValue::False) => true,
+            (TypeKind::Nil, ConstantValue::Nil) => true,
+            (TypeKind::Any, _) => true,
+            (TypeKind::Union(a, b), _) => {
+                a.as_ref().contains_constant(c) || b.as_ref().contains_constant(c)
             }
-            (IRType::Nil, ConstantValue::Nil) => true,
-            (IRType::True, ConstantValue::True) => true,
-            (IRType::False, ConstantValue::False) => true,
-            (IRType::Any, _) => true,
-            (IRType::Union(a, b), _) => a.contains_constant(c) || b.contains_constant(c),
             _ => false,
         }
     }
@@ -187,82 +209,83 @@ impl IRType {
         if self == other {
             return true;
         }
-        match (self, other) {
-            (IRType::Any, _) => true,
-            (_, IRType::Bottom) => true,
-            (IRType::List, IRType::Nil) | (IRType::List, IRType::Cons) => true,
-            (IRType::SmallInt, IRType::NonNegInt) => true,
-            (IRType::Union(a, b), _) => a.contains(other) || b.contains(other),
+        match (&self.kind, &other.kind) {
+            (TypeKind::Any, _) => true,
+            (_, TypeKind::Bottom) => true,
+            (TypeKind::List, TypeKind::Nil) | (TypeKind::List, TypeKind::Cons) => true,
+            (TypeKind::SmallInt, TypeKind::NonNegInt) => true,
+            (TypeKind::Union(a, b), _) => a.as_ref().contains(other) || b.as_ref().contains(other),
             _ => false,
         }
     }
 
     /// Check if this type is definitely a small integer.
     pub fn is_definitely_small_int(&self) -> bool {
-        matches!(self, IRType::SmallInt | IRType::NonNegInt)
+        matches!(self.kind, TypeKind::SmallInt | TypeKind::NonNegInt)
     }
 
     /// Check if this type is definitely an atom.
     pub fn is_definitely_atom(&self) -> bool {
         matches!(
-            self,
-            IRType::Atom | IRType::Boolean | IRType::Constant(ConstantValue::Atom(_))
+            self.kind,
+            TypeKind::Atom | TypeKind::Boolean | TypeKind::Constant(ConstantValue::Atom(_))
         )
     }
 
     /// Check if this type is definitely a tuple.
     pub fn is_definitely_tuple(&self) -> bool {
-        matches!(self, IRType::Tuple { .. })
+        matches!(self.kind, TypeKind::Tuple { .. })
     }
 
     /// Check if this type is definitely a list.
     pub fn is_definitely_list(&self) -> bool {
-        matches!(self, IRType::List | IRType::Cons | IRType::Nil)
+        matches!(self.kind, TypeKind::List | TypeKind::Cons | TypeKind::Nil)
     }
 
     /// Check if this type is definitely a map.
     pub fn is_definitely_map(&self) -> bool {
-        matches!(self, IRType::Map)
+        matches!(self.kind, TypeKind::Map)
     }
 
     /// Check if this type is definitely a float.
     pub fn is_definitely_float(&self) -> bool {
-        matches!(self, IRType::Float)
+        matches!(self.kind, TypeKind::Float)
     }
 
     /// Check if this type is definitely a function.
     pub fn is_definitely_fun(&self) -> bool {
-        matches!(self, IRType::Fun { .. })
+        matches!(self.kind, TypeKind::Fun { .. })
     }
 
     /// Check if this type is definitely a PID.
     pub fn is_definitely_pid(&self) -> bool {
-        matches!(self, IRType::Pid)
+        matches!(self.kind, TypeKind::Pid)
     }
 }
 
 impl fmt::Display for IRType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            IRType::Any => write!(f, "any"),
-            IRType::Bottom => write!(f, "bottom"),
-            IRType::SmallInt => write!(f, "smallint"),
-            IRType::NonNegInt => write!(f, "nonnegint"),
-            IRType::Float => write!(f, "float"),
-            IRType::Atom => write!(f, "atom"),
-            IRType::Boolean => write!(f, "boolean"),
-            IRType::Nil => write!(f, "nil"),
-            IRType::Cons => write!(f, "cons"),
-            IRType::List => write!(f, "list"),
-            IRType::Tuple { arity } => write!(f, "tuple({})", arity),
-            IRType::Map => write!(f, "map"),
-            IRType::Binary => write!(f, "binary"),
-            IRType::Fun { arity } => write!(f, "fun({})", arity),
-            IRType::Pid => write!(f, "pid"),
-            IRType::Port => write!(f, "port"),
-            IRType::Reference => write!(f, "reference"),
-            IRType::Union(a, b) => write!(f, "({} ∪ {})", a, b),
-            IRType::Constant(c) => match c {
+        match &self.kind {
+            TypeKind::Any => write!(f, "any"),
+            TypeKind::Bottom => write!(f, "bottom"),
+            TypeKind::SmallInt => write!(f, "smallint"),
+            TypeKind::NonNegInt => write!(f, "nonnegint"),
+            TypeKind::Int64 => write!(f, "int64"),
+            TypeKind::Float => write!(f, "float"),
+            TypeKind::Atom => write!(f, "atom"),
+            TypeKind::Boolean => write!(f, "boolean"),
+            TypeKind::Nil => write!(f, "nil"),
+            TypeKind::Cons => write!(f, "cons"),
+            TypeKind::List => write!(f, "list"),
+            TypeKind::Tuple { arity } => write!(f, "tuple({})", arity),
+            TypeKind::Map => write!(f, "map"),
+            TypeKind::Binary => write!(f, "binary"),
+            TypeKind::Fun { arity } => write!(f, "fun({})", arity),
+            TypeKind::Pid => write!(f, "pid"),
+            TypeKind::Port => write!(f, "port"),
+            TypeKind::Reference => write!(f, "reference"),
+            TypeKind::Union(a, b) => write!(f, "({} ∪ {})", a, b),
+            TypeKind::Constant(c) => match c {
                 ConstantValue::Int(i) => write!(f, "const({})", i),
                 ConstantValue::Atom(a) => write!(f, "const(atom:{})", a),
                 ConstantValue::Nil => write!(f, "const(nil)"),
@@ -275,6 +298,6 @@ impl fmt::Display for IRType {
 
 impl Default for IRType {
     fn default() -> Self {
-        IRType::Any
+        IRType::new(TypeKind::Any)
     }
 }

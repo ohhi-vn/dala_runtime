@@ -7,8 +7,9 @@
 //! - Spill slot allocation
 //! - Stack map generation for GC
 
+use crate::TypeId;
 use crate::instruction::Reg;
-use crate::type_system::{IRType, TypeId};
+use crate::type_system::{IRType, TypeKind};
 
 /// Stack frame layout for a compiled function.
 #[derive(Debug, Clone)]
@@ -106,7 +107,11 @@ impl FrameLayoutCalculator {
     /// Get the slot for a value, allocating if necessary.
     pub fn get_or_alloc_slot(&mut self, value_type: &IRType) -> Slot {
         // Try to use a register first
-        if let IRType::SmallInt | IRType::NonNegInt | IRType::Float | IRType::Atom = value_type {
+        if let IRType {
+            kind: TypeKind::SmallInt | TypeKind::NonNegInt | TypeKind::Float | TypeKind::Atom,
+            ..
+        } = value_type
+        {
             // Find least-pressure register
             if let Some(reg_idx) = self.find_lowest_pressure_reg() {
                 self.register_pressure[reg_idx] += 1;

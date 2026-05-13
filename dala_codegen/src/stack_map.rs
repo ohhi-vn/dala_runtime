@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use dala_ir::IRFunction;
+use dala_ir::{IRFunction, IRInstKind};
 
 /// A registry of stack maps for compiled functions.
 #[derive(Default)]
@@ -38,7 +38,7 @@ impl StackMapRegistry {
         let mut entries = Vec::new();
         for (block_idx, block) in func.blocks.iter().enumerate() {
             for (inst_idx, inst) in block.instructions.iter().enumerate() {
-                if matches!(inst.kind, crate::instruction::IRInstKind::GcSafe) {
+                if matches!(inst.kind, IRInstKind::GcSafe) {
                     entries.push(StackMapEntry {
                         instruction_offset: (block_idx as u32)
                             .saturating_mul(1000)

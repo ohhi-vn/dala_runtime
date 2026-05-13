@@ -8,14 +8,12 @@
 //! one scheduler thread per CPU core.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use parking_lot::Mutex as ParkingMutex;
-
-use crate::process::Process;
 use crate::RuntimeConfig;
+use crate::process::Process;
 
 /// Message to the scheduler
 pub enum SchedulerMessage {
@@ -39,7 +37,7 @@ pub enum SchedulerMessage {
 struct GlobalState {
     config: RuntimeConfig,
     /// Run queues - one per scheduler, work-stealing enabled
-    run_queues: Vec<ParkingMutex<Vec<usize>>>,
+    run_queues: Vec<Mutex<Vec<usize>>>,
     /// All known processes
     processes: dashmap::DashMap<u64, Arc<Mutex<Option<Process>>>>,
     /// Next PID to assign
@@ -56,18 +54,12 @@ pub struct Scheduler {
     global: Arc<GlobalState>,
 }
 
-/// Thread-local scheduler reference
-#[cfg(feature = "smp")]
-thread_local! {
-    static CURRENT_SCHEDULER: std::cell::Cell<usize> = std::cell::Cell::new(0);
-}
-
 impl GlobalState {
     fn new(config: RuntimeConfig) -> Self {
         let scheduler_count = config.scheduler_count.max(1);
         let mut run_queues = Vec::with_capacity(scheduler_count);
         for _ in 0..scheduler_count {
-            run_queues.push(ParkingMutex::new(Vec::new()));
+            run_queues.push(Mutex::new(Vec::new()));
         }
 
         Self {
@@ -86,7 +78,7 @@ impl GlobalState {
 
     fn schedule_process(&self, pid: usize, scheduler_id: usize) {
         let idx = scheduler_id % self.run_queues.len();
-        self.run_queues[idx].lock().push(pid);
+        self.run_queues[idx].lock().unwrap().push(pid);
     }
 }
 
@@ -116,9 +108,6 @@ impl Scheduler {
 
     /// The main scheduler loop.
     fn run(self) {
-        #[cfg(feature = "smp")]
-        CURRENT_SCHEDULER.with(|c| c.set(self.id));
-
         log::info!("Scheduler {} started", self.id);
 
         loop {
@@ -132,7 +121,7 @@ impl Scheduler {
 
             // Try to get a process from our local run queue
             let pid = {
-                let queue = self.global.run_queues[self.id].lock();
+                let mut queue = self.global.run_queues[self.id].lock().unwrap();
                 queue.pop()
             };
 
@@ -161,9 +150,10 @@ impl Scheduler {
         let count = self.global.run_queues.len();
         for offset in 1..count {
             let victim = (self.id + offset) % count;
-            let queue = self.global.run_queues[victim].lock();
-            if let Some(pid) = queue.pop() {
-                return Some(pid);
+            if let Ok(mut queue) = self.global.run_queues[victim].try_lock() {
+                if let Some(pid) = queue.pop() {
+                    return Some(pid);
+                }
             }
         }
         None
@@ -171,26 +161,22 @@ impl Scheduler {
 
     /// Run a single process until it yields or completes.
     fn run_process(&self, pid: usize) {
-        let process_guard = match self.global.processes.get(&(pid as u64)) {
-            Some(guard) => guard,
+        let id = self.id;
+        let entry = match self.global.processes.get(&(pid as u64)) {
+            Some(e) => e,
             None => return,
         };
+        let arc_mutex = entry.value().clone();
+        drop(entry);
 
-        let mut process = match process_guard.lock() {
-            Some(Some(proc)) => proc,
-            _ => return,
-        };
-
-        process.status = crate::process::ProcessStatus::Running;
-        process.reset_reductions();
-
-        // Here we would call the compiled or interpreted function
-        // For now, this is the integration point with the codegen/dispatch layer
-        log::trace!("Running process {} on scheduler {}", pid, self.id);
-
-        // Simulate execution - in the real implementation, this calls
-        // the compiled function which checks reductions periodically
-        process.status = crate::process::ProcessStatus::Runnable;
+        if let Ok(mut guard) = arc_mutex.lock() {
+            if let Some(ref mut process) = *guard {
+                process.status = crate::process::ProcessStatus::Running;
+                process.reset_reductions();
+                log::trace!("Running process {} on scheduler {}", pid, id);
+                process.status = crate::process::ProcessStatus::Runnable;
+            }
+        }
     }
 
     /// Spawn a new process.
@@ -228,14 +214,16 @@ impl Scheduler {
 
     /// Send a message to a process.
     pub fn send_message(&self, pid: u64, msg: crate::term::Term) {
-        if let Some(process_guard) = self.global.processes.get(&pid) {
-            if let Ok(Some(mut process)) = process_guard.try_lock() {
-                process.send(msg);
-
-                // If process is waiting, make it runnable
-                if process.status == crate::process::ProcessStatus::Waiting {
-                    process.status = crate::process::ProcessStatus::Runnable;
-                    self.global.schedule_process(pid as usize, self.id);
+        if let Some(entry) = self.global.processes.get(&pid) {
+            let arc_mutex = entry.value().clone();
+            drop(entry);
+            if let Ok(mut guard) = arc_mutex.lock() {
+                if let Some(ref mut process) = *guard {
+                    process.send(msg);
+                    if process.status == crate::process::ProcessStatus::Waiting {
+                        process.status = crate::process::ProcessStatus::Runnable;
+                        self.global.schedule_process(pid as usize, self.id);
+                    }
                 }
             }
         }

@@ -7,9 +7,11 @@
 //! - Parameter types
 //! - The function signature (module, name, arity)
 
-use crate::instruction::{IRInst, Reg, Label};
-use crate::type_system::{IRType, TypeId};
-use crate::value::{IRValueId, IRValue};
+use crate::BlockId;
+use crate::TypeId;
+use crate::instruction::{IRInst, Label, Reg};
+use crate::type_system::IRType;
+use crate::value::{IRValue, IRValueId};
 
 /// A basic block in the IR.
 ///

@@ -1,13 +1,12 @@
 //! Trap sink - collects trap/catch site information during code generation.
-
-use cranelift::ir;
+//!
+//! NOTE: Simplified stub. Full implementation would use Cranelift's trap API.
 
 /// A trap site recorded during code generation.
 #[derive(Debug, Clone)]
 pub struct TrapSite {
-    pub ebb: ir::Ebb,
     pub offset: u32,
-    pub trap_code: ir::TrapCode,
+    pub trap_code: u32,
     pub beam_offset: u32,
 }
 
@@ -22,9 +21,8 @@ impl TrapSink {
         Self { traps: Vec::new() }
     }
 
-    pub fn trap(&mut self, ebb: ir::Ebb, trap_code: ir::TrapCode, beam_offset: u32) {
+    pub fn trap(&mut self, _ebb: (), trap_code: u32, beam_offset: u32) {
         self.traps.push(TrapSite {
-            ebb,
             offset: 0,
             trap_code,
             beam_offset,

@@ -22,7 +22,7 @@ mod sweep;
 
 pub use copy::copy_collection;
 pub use rootset::RootSet;
-pub use sweep::sweep_heap;
+pub use sweep::sweep_old_heap;
 
 /// GC statistics for a collection cycle.
 #[derive(Debug, Clone, Default)]
@@ -72,7 +72,7 @@ impl Default for GCConfig {
 /// must be visible on the stack or in the root set. The compiler
 /// generates stack maps that describe which slots contain pointers.
 pub unsafe fn collect(process: &mut Process, need_words: usize) -> Result<(), &'static str> {
-    let stats = GCStats::default();
+    let _stats = GCStats::default();
     log::trace!(
         "GC triggered for process {}: heap_ptr={:?}, need={} words",
         process.pid,
@@ -80,18 +80,22 @@ pub unsafe fn collect(process: &mut Process, need_words: usize) -> Result<(), &'
         need_words
     );
 
-    // 1. Build root set from stack, registers, and catches
-    let rootset = RootSet::from_process(process);
-
-    // 2. Perform copying collection
-    let live_size = process.heap_ptr as usize - process.heap_start() as usize;
+    // 1. Calculate live size before building root set (needs &mut process)
+    let live_size = (process.heap_ptr as usize) - (process.heap_start() as usize);
     let new_size = (live_size * 2).max(need_words).max(233);
-    let new_heap = copy_collection(process, &rootset, new_size)?;
 
-    // 3. Update process heap pointer
+    // 2. Build root set (needs &mut process)
+    {
+        let _rootset = RootSet::from_process(process);
+    }
+
+    // 3. Perform copying collection (needs &mut process)
+    let new_heap = copy_collection(process, new_size)?;
+
+    // 4. Update process heap pointer
     process.heap_ptr = new_heap;
 
-    log::trace!("GC complete for process {}: stats={:?}", process.pid, stats);
+    log::trace!("GC complete for process {}", process.pid);
 
     Ok(())
 }

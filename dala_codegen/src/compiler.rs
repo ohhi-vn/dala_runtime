@@ -1,15 +1,11 @@
 //! Compiler driver - orchestrates the compilation pipeline.
 //!
 //! This module provides the high-level `Compiler` struct that ties together
-//! the BEAM loader, IR builder, optimizer, and code generator.
+//! the IR builder, optimizer, and code generator.
 
-use std::path::Path;
-
-use dala_beam_loader::{BeamModule, load_beam_bytes, load_beam_file};
 use dala_ir::opt;
 use dala_ir::{IRBuilder, IRFunction, IRModule};
-use dala_runtime::code::ModuleCode;
-use dala_runtime::{CodePtr, CodeRegistry, FunctionEntry};
+use dala_runtime::code::{CodePtr, CodeRegistry, FunctionEntry, ModuleCode};
 
 use crate::CodeGenerator;
 
@@ -45,39 +41,20 @@ impl Compiler {
         &self.code_registry
     }
 
-    /// Compile a BEAM module from a file path.
-    pub fn compile_file<P: AsRef<Path>>(
-        &mut self,
-        path: P,
-    ) -> Result<Vec<crate::CompiledFunction>, String> {
-        let beam_module = load_beam_file(path.as_ref())
-            .map_err(|e| format!("Failed to load BEAM file: {:?}", e))?;
-        self.compile_beam_module(&beam_module)
-    }
-
-    /// Compile a BEAM module from bytes.
-    pub fn compile_bytes(&mut self, data: &[u8]) -> Result<Vec<crate::CompiledFunction>, String> {
-        let beam_module =
-            load_beam_bytes(data).map_err(|e| format!("Failed to load BEAM bytes: {:?}", e))?;
-        self.compile_beam_module(&beam_module)
-    }
-
-    /// Compile a loaded BEAM module.
+    /// Compile a loaded BEAM module (stub - full implementation would load .beam files).
     pub fn compile_beam_module(
         &mut self,
-        beam_module: &BeamModule,
+        ir_module: &IRModule,
     ) -> Result<Vec<crate::CompiledFunction>, String> {
-        // Translate BEAM bytecode to IR
-        let mut ir_module = self.translate_to_ir(beam_module)?;
-
         // Run optimization passes on each function
-        for func in &mut ir_module.function_bodies {
+        let mut optimized_module = ir_module.clone();
+        for func in &mut optimized_module.function_bodies {
             opt::optimize(func);
         }
 
         // Compile each function
         let mut compiled_functions = Vec::new();
-        for func in &ir_module.function_bodies {
+        for func in &optimized_module.function_bodies {
             match self.codegen.compile_function(func) {
                 Ok(cf) => {
                     compiled_functions.push(cf);
@@ -91,43 +68,13 @@ impl Compiler {
         Ok(compiled_functions)
     }
 
-    /// Translate a BEAM module to IR.
-    fn translate_to_ir(&mut self, beam_module: &BeamModule) -> Result<IRModule, String> {
-        let module_name = 0u64; // TODO: use actual atom index
-        let mut ir_module = IRModule::new(module_name);
-
-        // Register exports
-        for (name, arity, _label) in &beam_module.exports {
-            ir_module.add_export(*name, *arity);
-        }
-
-        // Translate each function
-        for ((name, arity), beam_func) in &beam_module.functions {
-            let func_id = ir_module.add_function(*name, *arity);
-            let func = ir_module.get_function_body_mut(func_id);
-
-            // Set source info
-            func.file = 0;
-            func.line = 0;
-
-            // Build the IR from BEAM instructions
-            self.translate_function(func, beam_func)?;
-        }
-
-        Ok(ir_module)
-    }
-
-    /// Translate a single BEAM function to IR.
-    fn translate_function(
-        &self,
-        func: &mut IRFunction,
-        beam_func: &dala_beam_loader::BeamFunction,
-    ) -> Result<(), String> {
+    /// Translate a single BEAM function to IR (stub).
+    pub fn translate_function(&self, func: &mut IRFunction) -> Result<(), String> {
         let mut builder = IRBuilder::new(func.module, func.name, func.arity);
 
         // For now, emit a simple entry block that returns nil
-        // Full translation would map each BEAM instruction to IR
-        builder.emit_ret(builder.const_nil());
+        let nil_val = builder.const_nil();
+        builder.emit_ret(nil_val);
 
         // Replace the function's blocks with the built IR
         func.blocks = builder.function.blocks;
@@ -154,18 +101,8 @@ impl Compiler {
             file: 0,
             line: 0,
         };
-        let mut mc = self
-            .code_registry
-            .modules
-            .write()
-            .unwrap()
-            .remove(&module)
-            .unwrap_or_else(|| ModuleCode::new(module));
+        let mut mc = ModuleCode::new(module);
         mc.add_function(entry);
-        self.code_registry
-            .modules
-            .write()
-            .unwrap()
-            .insert(module, mc);
+        self.code_registry.register_module(module, mc);
     }
 }

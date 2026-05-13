@@ -4,7 +4,6 @@
 //! scheduler, garbage collector, and term representation.
 //! It serves as the execution engine for AOT-compiled BEAM code.
 
-#![cfg_attr(feature = "smp", feature(thread_local))]
 #![warn(missing_docs)]
 #![deny(clippy::all)]
 
@@ -21,12 +20,12 @@ pub mod term;
 pub mod trap;
 
 // Re-exports
-pub use atom::Atom;
+pub use atom::AtomTable;
 pub use exception::{Exception, Reason};
 pub use process::{Process, ProcessFlags};
 pub use scheduler::{Scheduler, SchedulerMessage};
-pub use term::{Term, Tag};
-pub use trap::Trap;
+pub use term::Term;
+pub use trap::TrapFrame as Trap;
 
 /// Runtime configuration
 #[derive(Debug, Clone)]

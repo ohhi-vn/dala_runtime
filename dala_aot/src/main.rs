@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()> {
         } => {
             println!("Compiling {} -> {}", input.display(), output.display());
             println!(
-                "Target: {}, Mode: {:?}, Optimize: {}",
+                "Target: {}, Mode: {:?}, Optimize: {:?}",
                 target, mode, optimize
             );
             // Compilation logic would go here

@@ -4,10 +4,10 @@
 //! the IR enables constant propagation, dead code elimination, and
 //! other optimizations.
 
-use crate::type_system::{ConstantValue, IRType};
+use crate::type_system::{ConstantValue, IRType, TypeKind};
 
 /// A constant value in the IR.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Constant {
     /// A small integer constant.
     Int(i64),
@@ -35,21 +35,21 @@ impl Constant {
         match self {
             Constant::Int(i) => {
                 if *i >= 0 {
-                    IRType::NonNegInt
+                    IRType::new(TypeKind::NonNegInt)
                 } else {
-                    IRType::SmallInt
+                    IRType::new(TypeKind::SmallInt)
                 }
             }
-            Constant::Atom(_) => IRType::Atom,
-            Constant::Nil => IRType::Nil,
-            Constant::True => IRType::True,
-            Constant::False => IRType::False,
-            Constant::Float(_) => IRType::Float,
-            Constant::Tuple(elements) => IRType::Tuple {
+            Constant::Atom(_) => IRType::new(TypeKind::Atom),
+            Constant::Nil => IRType::new(TypeKind::Nil),
+            Constant::True => IRType::new(TypeKind::Boolean),
+            Constant::False => IRType::new(TypeKind::Boolean),
+            Constant::Float(_) => IRType::new(TypeKind::Float),
+            Constant::Tuple(elements) => IRType::new(TypeKind::Tuple {
                 arity: elements.len() as u32,
-            },
-            Constant::List(_) => IRType::List,
-            Constant::Binary(_) => IRType::Binary,
+            }),
+            Constant::List(_) => IRType::new(TypeKind::List),
+            Constant::Binary(_) => IRType::new(TypeKind::Binary),
         }
     }
 
@@ -100,10 +100,19 @@ impl From<i64> for Constant {
 
 impl From<bool> for Constant {
     fn from(val: bool) -> Self {
-        if val {
-            Constant::True
-        } else {
-            Constant::False
+        if val { Constant::True } else { Constant::False }
+    }
+}
+
+impl From<Constant> for ConstantValue {
+    fn from(c: Constant) -> Self {
+        match c {
+            Constant::Int(i) => ConstantValue::Int(i),
+            Constant::Atom(a) => ConstantValue::Atom(a),
+            Constant::Nil => ConstantValue::Nil,
+            Constant::True => ConstantValue::True,
+            Constant::False => ConstantValue::False,
+            _ => ConstantValue::Nil,
         }
     }
 }
@@ -117,11 +126,11 @@ impl From<f64> for Constant {
 impl From<ConstantValue> for IRType {
     fn from(cv: ConstantValue) -> Self {
         match cv {
-            ConstantValue::Int(_) => IRType::SmallInt,
-            ConstantValue::Atom(_) => IRType::Atom,
-            ConstantValue::Nil => IRType::Nil,
-            ConstantValue::True => IRType::True,
-            ConstantValue::False => IRType::False,
+            ConstantValue::Int(_) => IRType::new(TypeKind::SmallInt),
+            ConstantValue::Atom(_) => IRType::new(TypeKind::Atom),
+            ConstantValue::Nil => IRType::new(TypeKind::Nil),
+            ConstantValue::True => IRType::new(TypeKind::Boolean),
+            ConstantValue::False => IRType::new(TypeKind::Boolean),
         }
     }
 }

@@ -78,7 +78,7 @@ impl AtomTable {
         }
 
         let idx = names.len() as u32;
-        let leaked: &'static str = unsafe { std::mem::transmute(name.as_ptr() as *const str) };
+        let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
         names.push(leaked);
         indices.insert(leaked, idx);
         idx
@@ -123,7 +123,10 @@ pub fn get_atom_table() -> &'static AtomTable {
         ATOM_INIT.call_once(|| {
             ATOM_TABLE = Some(AtomTable::new());
         });
-        ATOM_TABLE.as_ref().unwrap()
+        match ATOM_TABLE {
+            Some(ref table) => table,
+            None => unreachable!(),
+        }
     }
 }
 

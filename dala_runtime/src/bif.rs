@@ -7,9 +7,10 @@
 //! - `erlang:send/2`, `erlang:self/0` (process operations)
 //! - `erlang:spawn/3` (process creation)
 
-use crate::exception::{Exception, Reason};
+use crate::exception::Exception;
 use crate::process::Process;
-use crate::term::{Tag, Term};
+use crate::term::Term;
+use crate::term::tags;
 
 /// Result type for BIF execution.
 pub type BifResult = Result<Term, Exception>;
@@ -19,8 +20,8 @@ pub type BifFn = unsafe fn(&mut Process, &[Term]) -> BifResult;
 
 /// BIF descriptor.
 pub struct BifDescriptor {
-    pub module: u64,
-    pub function: u64,
+    pub module: u32,
+    pub function: u32,
     pub arity: u32,
     pub implementation: BifFn,
 }
@@ -34,6 +35,27 @@ macro_rules! bif {
             function: $func,
             arity: $arity,
             implementation: $fn,
+        }
+    };
+}
+
+// ===== Helper Functions =====
+
+/// Helper: create a badarg exception.
+fn badarg() -> Exception {
+    Exception::error(Term::atom(crate::atom::atom("badarg")))
+}
+
+/// Helper: create a badarith exception.
+fn badarith() -> Exception {
+    Exception::error(Term::atom(crate::atom::atom("badarith")))
+}
+
+/// Internal macro for arity checking.
+macro_rules! check_arity {
+    ($args:expr, $expected:expr) => {
+        if $args.len() != $expected {
+            return Err(badarg());
         }
     };
 }
@@ -146,7 +168,9 @@ pub unsafe fn is_port_1(_proc: &mut Process, args: &[Term]) -> BifResult {
 /// `erlang:is_function/1`
 pub unsafe fn is_function_1(_proc: &mut Process, args: &[Term]) -> BifResult {
     check_arity!(args, 1);
-    Ok(Term::bool(args[0].is_fun()))
+    Ok(Term::bool(
+        args[0].is_boxed() && args[0].header_tag() == crate::term::tags::HEADER_FUN,
+    ))
 }
 
 /// `erlang:is_map/1`
@@ -380,87 +404,102 @@ pub unsafe fn float_1(proc: &mut Process, args: &[Term]) -> BifResult {
     }
     // The boxed pointer with FLOAT header tag
     let result_ptr = unsafe { heap_ptr.sub(3) };
-    Ok(Term::from_raw(result_ptr as u64 | tags::PRIMARY_TAG_BOXED))
-}
-
-/// Helper: create a badarg exception.
-fn badarg() -> Exception {
-    Exception::error(Term::atom(crate::atom::atom("badarg")))
-}
-
-/// Helper: create a badarith exception.
-fn badarith() -> Exception {
-    Exception::error(Term::atom(crate::atom::atom("badarith")))
-}
-
-/// Internal macro for arity checking.
-macro_rules! check_arity {
-    ($args:expr, $expected:expr) => {
-        if $args.len() != $expected {
-            return Err(badarg());
-        }
-    };
+    Ok(Term::from_raw(
+        result_ptr as u64 | crate::term::tags::PRIMARY_TAG_BOXED,
+    ))
 }
 
 /// Register all BIFs into the runtime.
 pub fn register_all_bifs() -> Vec<BifDescriptor> {
+    // Pre-compute atom indices
+    let erlang = crate::atom::atom("erlang");
+    let plus = crate::atom::atom("+");
+    let minus = crate::atom::atom("-");
+    let multiply = crate::atom::atom("*");
+    let div = crate::atom::atom("div");
+    let rem = crate::atom::atom("rem");
+    let is_integer = crate::atom::atom("is_integer");
+    let is_atom = crate::atom::atom("is_atom");
+    let is_binary = crate::atom::atom("is_binary");
+    let is_boolean = crate::atom::atom("is_boolean");
+    let is_tuple = crate::atom::atom("is_tuple");
+    let is_list = crate::atom::atom("is_list");
+    let is_pid = crate::atom::atom("is_pid");
+    let is_port = crate::atom::atom("is_port");
+    let is_function = crate::atom::atom("is_function");
+    let is_map = crate::atom::atom("is_map");
+    let is_number = crate::atom::atom("is_number");
+    let is_float = crate::atom::atom("is_float");
+    let eq = crate::atom::atom("==");
+    let neq = crate::atom::atom("/=");
+    let exact_eq = crate::atom::atom("=:=");
+    let self_ = crate::atom::atom("self");
+    let spawn = crate::atom::atom("spawn");
+    let send = crate::atom::atom("send");
+    let error = crate::atom::atom("error");
+    let throw = crate::atom::atom("throw");
+    let exit = crate::atom::atom("exit");
+    let fault = crate::atom::atom("fault");
+    let tuple_size = crate::atom::atom("tuple_size");
+    let size = crate::atom::atom("size");
+    let length = crate::atom::atom("length");
+    let hd = crate::atom::atom("hd");
+    let tl = crate::atom::atom("tl");
+    let node = crate::atom::atom("node");
+    let nodes = crate::atom::atom("nodes");
+    let integer_to_list = crate::atom::atom("integer_to_list");
+    let list_to_integer = crate::atom::atom("list_to_integer");
+    let atom_to_list = crate::atom::atom("atom_to_list");
+    let list_to_atom = crate::atom::atom("list_to_atom");
+    let float = crate::atom::atom("float");
+
     vec![
-        bif!(atom!("erlang"), atom!("+"), 2, add_2),
-        bif!(atom!("erlang"), atom!("-"), 2, sub_2),
-        bif!(atom!("erlang"), atom!("*"), 2, mul_2),
-        bif!(atom!("erlang"), atom!("div"), 2, div_2),
-        bif!(atom!("erlang"), atom!("rem"), 2, rem_2),
-        bif!(atom!("erlang"), atom!("-"), 1, neg_1),
-        bif!(atom!("erlang"), atom!("is_integer"), 1, is_integer_1),
-        bif!(atom!("erlang"), atom!("is_atom"), 1, is_atom_1),
-        bif!(atom!("erlang"), atom!("is_binary"), 1, is_binary_1),
-        bif!(atom!("erlang"), atom!("is_boolean"), 1, is_boolean_1),
-        bif!(atom!("erlang"), atom!("is_tuple"), 1, is_tuple_1),
-        bif!(atom!("erlang"), atom!("is_list"), 1, is_list_1),
-        bif!(atom!("erlang"), atom!("is_pid"), 1, is_pid_1),
-        bif!(atom!("erlang"), atom!("is_port"), 1, is_port_1),
-        bif!(atom!("erlang"), atom!("is_function"), 1, is_function_1),
-        bif!(atom!("erlang"), atom!("is_map"), 1, is_map_1),
-        bif!(atom!("erlang"), atom!("is_number"), 1, is_number_1),
-        bif!(atom!("erlang"), atom!("is_float"), 1, is_float_1),
-        bif!(atom!("erlang"), atom!("=="), 2, eq_2),
-        bif!(atom!("erlang"), atom!("/="), 2, neq_2),
-        bif!(atom!("erlang"), atom!("=:="), 2, exact_eq_2),
-        bif!(atom!("erlang"), atom!("self"), 0, self_0),
-        bif!(atom!("erlang"), atom!("spawn"), 3, spawn_3),
-        bif!(atom!("erlang"), atom!("send"), 2, send_2),
-        bif!(atom!("erlang"), atom!("error"), 1, error_1),
-        bif!(atom!("erlang"), atom!("error"), 2, error_2),
-        bif!(atom!("erlang"), atom!("throw"), 1, throw_1),
-        bif!(atom!("erlang"), atom!("exit"), 1, exit_1),
-        bif!(atom!("erlang"), atom!("fault"), 1, fault_1),
-        bif!(atom!("erlang"), atom!("tuple_size"), 1, tuple_size_1),
-        bif!(atom!("erlang"), atom!("size"), 1, size_1),
-        bif!(atom!("erlang"), atom!("length"), 1, length_1),
-        bif!(atom!("erlang"), atom!("hd"), 1, hd_1),
-        bif!(atom!("erlang"), atom!("tl"), 1, tl_1),
-        bif!(atom!("erlang"), atom!("node"), 0, node_0),
-        bif!(atom!("erlang"), atom!("nodes"), 0, nodes_0),
-        bif!(
-            atom!("erlang"),
-            atom!("integer_to_list"),
-            1,
-            integer_to_list_1
-        ),
-        bif!(
-            atom!("erlang"),
-            atom!("list_to_integer"),
-            1,
-            list_to_integer_1
-        ),
-        bif!(atom!("erlang"), atom!("atom_to_list"), 1, atom_to_list_1),
-        bif!(atom!("erlang"), atom!("list_to_atom"), 1, list_to_atom_1),
-        bif!(atom!("erlang"), atom!("float"), 1, float_1),
+        bif!(erlang, plus, 2, add_2),
+        bif!(erlang, minus, 2, sub_2),
+        bif!(erlang, multiply, 2, mul_2),
+        bif!(erlang, div, 2, div_2),
+        bif!(erlang, rem, 2, rem_2),
+        bif!(erlang, minus, 1, neg_1),
+        bif!(erlang, is_integer, 1, is_integer_1),
+        bif!(erlang, is_atom, 1, is_atom_1),
+        bif!(erlang, is_binary, 1, is_binary_1),
+        bif!(erlang, is_boolean, 1, is_boolean_1),
+        bif!(erlang, is_tuple, 1, is_tuple_1),
+        bif!(erlang, is_list, 1, is_list_1),
+        bif!(erlang, is_pid, 1, is_pid_1),
+        bif!(erlang, is_port, 1, is_port_1),
+        bif!(erlang, is_function, 1, is_function_1),
+        bif!(erlang, is_map, 1, is_map_1),
+        bif!(erlang, is_number, 1, is_number_1),
+        bif!(erlang, is_float, 1, is_float_1),
+        bif!(erlang, eq, 2, eq_2),
+        bif!(erlang, neq, 2, neq_2),
+        bif!(erlang, exact_eq, 2, exact_eq_2),
+        bif!(erlang, self_, 0, self_0),
+        bif!(erlang, spawn, 3, spawn_3),
+        bif!(erlang, send, 2, send_2),
+        bif!(erlang, error, 1, error_1),
+        bif!(erlang, error, 2, error_2),
+        bif!(erlang, throw, 1, throw_1),
+        bif!(erlang, exit, 1, exit_1),
+        bif!(erlang, fault, 1, fault_1),
+        bif!(erlang, tuple_size, 1, tuple_size_1),
+        bif!(erlang, size, 1, size_1),
+        bif!(erlang, length, 1, length_1),
+        bif!(erlang, hd, 1, hd_1),
+        bif!(erlang, tl, 1, tl_1),
+        bif!(erlang, node, 0, node_0),
+        bif!(erlang, nodes, 0, nodes_0),
+        bif!(erlang, integer_to_list, 1, integer_to_list_1),
+        bif!(erlang, list_to_integer, 1, list_to_integer_1),
+        bif!(erlang, atom_to_list, 1, atom_to_list_1),
+        bif!(erlang, list_to_atom, 1, list_to_atom_1),
+        bif!(erlang, float, 1, float_1),
     ]
 }
 
 /// Look up a BIF by module, function, and arity.
-pub fn lookup_bif(module: u64, function: u64, arity: u32) -> Option<BifFn> {
+pub fn lookup_bif(module: u32, function: u32, arity: u32) -> Option<BifFn> {
     let bifs = register_all_bifs();
     for bif in &bifs {
         if bif.module == module && bif.function == function && bif.arity == arity {

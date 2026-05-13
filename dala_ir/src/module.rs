@@ -6,9 +6,10 @@
 
 use indexmap::IndexMap;
 
-use crate::function::IRFunction;
-use crate::type_system::{IRType, TypeId};
 use crate::IRFunctionId;
+use crate::TypeId;
+use crate::function::IRFunction;
+use crate::type_system::IRType;
 
 /// An IR module representing a compiled BEAM module.
 #[derive(Debug, Clone)]

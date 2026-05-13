@@ -62,14 +62,11 @@ impl<'a> RootSet<'a> {
         }
 
         // Scan catch stack for roots
-        for frame in &process.catches {
-            // Catch frames may contain saved X registers
-            for i in 0..frame.x.len() {
-                let term = &frame.x[i];
-                if term.is_boxed() || term.is_list() {
-                    rootset.catch_roots.push(&frame.x[i] as *const Term);
-                }
-            }
+        // Catch frames save stack/heap pointers but not X registers directly
+        // The X registers are saved on the process stack, which is already scanned above
+        for _frame in &process.catches {
+            // Catch frames contain stack_pointer, heap_pointer, cp for unwinding
+            // No additional GC roots in catch frames themselves
         }
 
         rootset

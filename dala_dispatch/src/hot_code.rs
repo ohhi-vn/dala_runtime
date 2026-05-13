@@ -8,6 +8,7 @@ use dashmap::DashMap;
 
 /// A lazy function reference for hot code upgrade support.
 #[repr(C)]
+#[derive(Debug)]
 pub struct LazyFnRef {
     /// The resolved function pointer
     code: RwLock<CodePtr>,
@@ -32,17 +33,28 @@ impl LazyFnRef {
 
     /// Get the current function pointer.
     pub fn get(&self) -> CodePtr {
-        *self.code.read().unwrap()
+        *self.code.read()
     }
 
     /// Set the function pointer (used during code loading).
     pub fn set(&self, ptr: CodePtr) {
-        *self.code.write().unwrap() = ptr;
+        *self.code.write() = ptr;
     }
 
     /// Check if this reference has been resolved.
     pub fn is_resolved(&self) -> bool {
-        !self.code.read().unwrap().is_null()
+        !self.code.read().is_null()
+    }
+}
+
+impl Clone for LazyFnRef {
+    fn clone(&self) -> Self {
+        Self {
+            code: RwLock::new(*self.code.read()),
+            module: self.module,
+            function: self.function,
+            arity: self.arity,
+        }
     }
 }
 
@@ -82,5 +94,10 @@ impl HotCodeManager {
     /// Remove a module.
     pub fn remove_module(&self, module_name: u64) -> bool {
         self.modules.remove(&module_name).is_some()
+    }
+
+    /// Update module definitions (stub).
+    pub fn update_module_definitions(&self, _module_name: u64) {
+        // Stub: would update internal module references
     }
 }

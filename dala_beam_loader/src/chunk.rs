@@ -116,6 +116,3 @@ pub struct LineEntry {
     /// Line number
     pub line: u32,
 }
-
-use std::io::Read;
-use std::io::Seek;

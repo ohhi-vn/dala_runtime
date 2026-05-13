@@ -20,7 +20,7 @@ pub enum Reg {
 }
 
 /// A label for a basic block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Label(pub u32);
 
 /// A single IR instruction.

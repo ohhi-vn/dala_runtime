@@ -4,17 +4,18 @@
 //! EEP-46. It consists of a series of chunks, each identified by
 //! a 4-byte ID and containing structured binary data.
 
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 
 use crate::BeamModule;
-use crate::bytecode::{BeamFunction, BeamOperand, BeamRegister};
+use crate::bytecode::{BeamFunction, BeamInstruction, BeamOperand, BeamRegister};
 use crate::error::{BeamError, Result};
 
 /// A reader for BEAM files.
 pub struct BeamReader<R: Read + Seek> {
-    reader: R,
+    pub reader: R,
     /// Current position in the file
-    pos: u64,
+    pub pos: u64,
 }
 
 impl BeamReader<std::fs::File> {
@@ -365,10 +366,11 @@ impl<R: Read + Seek> BeamReader<R> {
                             operands.push(BeamOperand::Integer(val));
                         }
                         3 => {
+                            let mut fbuf = [0u8; 8];
                             cursor
-                                .read_exact(&mut buf)
+                                .read_exact(&mut fbuf)
                                 .map_err(|e| BeamError::IoError(e.to_string()))?;
-                            let val = u64::from_be_bytes(buf);
+                            let val = u64::from_be_bytes(fbuf);
                             let float_val = f64::from_bits(val);
                             operands.push(BeamOperand::Float(float_val));
                         }

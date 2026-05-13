@@ -13,6 +13,7 @@ pub mod const_prop;
 pub mod cse;
 pub mod dce;
 pub mod simplify_cfg;
+pub mod tail_call;
 
 use crate::function::IRFunction;
 
@@ -51,6 +52,11 @@ pub fn optimize(func: &mut IRFunction) {
         if simplify_cfg::simplify(func) {
             changed = true;
         }
+
+        // Tail call analysis
+        if tail_call::analyze(func) {
+            changed = true;
+        }
     }
 
     log::debug!("Optimization converged after {} iterations", iteration);
@@ -64,6 +70,7 @@ pub fn run_pass(func: &mut IRFunction, pass_name: &str) -> bool {
         "fold" => const_prop::fold_constants(func),
         "cse" => cse::eliminate_common_subexprs(func),
         "simplify-cfg" => simplify_cfg::simplify(func),
+        "tail-call" => tail_call::analyze(func),
         _ => {
             log::warn!("Unknown optimization pass: {}", pass_name);
             false

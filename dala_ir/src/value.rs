@@ -7,7 +7,13 @@
 //!
 //! Values are identified by ValueId and carry type information.
 
-use crate::type_system::{ConstantValue, IRType};
+use crate::InstId;
+use crate::type_system::{ConstantValue, IRType, TypeKind};
+
+/// The top type (any possible value) - used for placeholder values.
+static TOP_TYPE: IRType = IRType {
+    kind: TypeKind::Any,
+};
 
 /// An SSA value in the IR.
 #[derive(Debug, Clone)]
@@ -50,7 +56,7 @@ impl IRValue {
             IRValue::Constant { ty, .. } => ty,
             IRValue::InstResult { ty, .. } => ty,
             IRValue::Argument { ty, .. } => ty,
-            IRValue::Placeholder => &IRType::Any,
+            IRValue::Placeholder => &TOP_TYPE,
         }
     }
 

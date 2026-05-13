@@ -6,9 +6,9 @@
 //! - Removes unreachable blocks
 //! - Converts conditional branches to unconditional when condition is constant
 
-use crate::function::IRFunction;
-use crate::instruction::IRInstKind;
 use crate::BlockId;
+use crate::function::IRFunction;
+use crate::instruction::{IRInstKind, Label};
 
 /// Simplify the control flow graph of a function.
 ///
@@ -40,7 +40,7 @@ fn eliminate_fallthrough_branches(func: &mut IRFunction) -> bool {
         if let Some(last_inst) = block.instructions.last() {
             if let IRInstKind::Br { target } = last_inst.kind {
                 // Check if target is the next block in sequence
-                let current_idx = block.label.0 as usize;
+                let current_idx = block.label.0;
                 if target.0 == current_idx + 1 {
                     // This is a fall-through branch - remove it
                     block.instructions.pop();
@@ -105,10 +105,11 @@ fn merge_blocks(func: &mut IRFunction) -> bool {
         func.blocks[src_idx].successors = dst_successors;
 
         // Update the branch instruction's target if needed
+        let src_label = func.blocks[src_idx].label;
         if let Some(last) = func.blocks[src_idx].instructions.last_mut() {
             if let IRInstKind::Br { target } = &mut last.kind {
                 if target.0 as usize == dst_idx {
-                    *target = func.blocks[src_idx].label;
+                    *target = src_label;
                 }
             }
         }
@@ -140,7 +141,7 @@ fn remove_unreachable(func: &mut IRFunction) -> bool {
 /// Compute reachable blocks from the entry block.
 fn compute_reachable(func: &IRFunction) -> Vec<bool> {
     let mut reachable = vec![false; func.blocks.len()];
-    let mut worklist = vec![func.entry_block];
+    let mut worklist: Vec<BlockId> = vec![func.entry_block];
 
     while let Some(block_id) = worklist.pop() {
         if reachable[block_id.0] {
@@ -150,8 +151,9 @@ fn compute_reachable(func: &IRFunction) -> Vec<bool> {
 
         let block = &func.blocks[block_id.0];
         for &succ in &block.successors {
-            if !reachable[succ.0] {
-                worklist.push(succ);
+            let succ_block = BlockId(succ.0 as usize);
+            if !reachable[succ.0 as usize] {
+                worklist.push(succ_block);
             }
         }
     }

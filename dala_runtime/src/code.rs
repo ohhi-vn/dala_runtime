@@ -17,7 +17,7 @@ use crate::term::Term;
 /// For AOT-compiled code, this is a raw function pointer.
 /// For interpreted code, this wraps the bytecode interpreter entry.
 #[repr(C)]
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct CodePtr {
     ptr: usize,
 }

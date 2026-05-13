@@ -10,7 +10,7 @@ use dashmap::DashMap;
 use parking_lot::RwLock;
 
 use dala_ir::{IRFunction, IRModule};
-use dala_runtime::{CodePtr, CodeRegistry};
+use dala_runtime::code::{CodePtr, CodeRegistry};
 
 use crate::hot_code::LazyFnRef;
 
@@ -79,14 +79,12 @@ impl DispatchManager {
     /// Register a compiled module.
     pub fn register_module(&self, module: CompiledModule) -> u64 {
         let name = module.name;
-        self.modules.insert(name, Arc::new(module.clone()));
-
-        // Register exports
+        // Register exports before moving module
         for export in &module.exports {
             self.export_table
-                .register(module.name, export.function, export.arity, export.code_ptr);
+                .register(name, export.function, export.arity, export.code_ptr);
         }
-
+        self.modules.insert(name, Arc::new(module));
         name
     }
 
@@ -97,10 +95,10 @@ impl DispatchManager {
 
     /// Hot-replace a module's code.
     pub fn hot_replace(&self, module: CompiledModule) -> Result<(), HotCodeError> {
-        let old_module = self.modules.get(&module.name);
+        let name = module.name;
 
         // Validate that the new module has the same exports
-        if let Some(old) = old_module {
+        if let Some(old) = self.modules.get(&name) {
             let old_exports: Vec<_> = old.exports.iter().map(|e| (e.function, e.arity)).collect();
             let new_exports: Vec<_> = module
                 .exports
@@ -113,11 +111,14 @@ impl DispatchManager {
             }
         }
 
-        // Register the new module
-        let name = self.register_module(module.clone());
+        // Update lazy references before moving module
+        for export in &module.exports {
+            export.lazy_ref.set(export.code_ptr);
+        }
 
-        // Update lazy references atomically
-        self.hot_code.update_module(name, module);
+        // Register the new module
+        self.modules.insert(name, Arc::new(module));
+        self.hot_code.update_module_definitions(name);
 
         Ok(())
     }

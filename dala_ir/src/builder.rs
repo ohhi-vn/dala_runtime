@@ -9,11 +9,12 @@
 
 use indexmap::IndexMap;
 
+use crate::TypeId;
 use crate::function::{BasicBlock, IRFunction};
 use crate::instruction::{IRInst, IRInstKind, Label, Reg, SideEffects};
-use crate::type_system::{IRType, IRType as Ty, TypeId};
+use crate::type_system::{ConstantValue, IRType, TypeKind};
 use crate::value::{IRValue, IRValueId};
-use crate::IRFunctionId;
+use crate::{BlockId, IRFunctionId, InstId};
 
 /// The IR builder constructs SSA IR from BEAM bytecode.
 pub struct IRBuilder {
@@ -103,40 +104,40 @@ impl IRBuilder {
     /// Create a constant integer value.
     pub fn const_small_int(&mut self, val: i64) -> IRValueId {
         self.add_value(IRValue::Constant {
-            value: crate::constant::Constant::Int(val),
-            ty: IRType::SmallInt,
+            value: ConstantValue::Int(val),
+            ty: IRType::new(TypeKind::SmallInt),
         })
     }
 
     /// Create a constant atom value.
     pub fn const_atom(&mut self, atom_idx: u32) -> IRValueId {
         self.add_value(IRValue::Constant {
-            value: crate::constant::Constant::Atom(atom_idx),
-            ty: IRType::Atom,
+            value: ConstantValue::Atom(atom_idx),
+            ty: IRType::new(TypeKind::Atom),
         })
     }
 
     /// Create a constant nil value.
     pub fn const_nil(&mut self) -> IRValueId {
         self.add_value(IRValue::Constant {
-            value: crate::constant::Constant::Nil,
-            ty: IRType::Nil,
+            value: ConstantValue::Nil,
+            ty: IRType::new(TypeKind::Nil),
         })
     }
 
     /// Create a constant true value.
     pub fn const_true(&mut self) -> IRValueId {
         self.add_value(IRValue::Constant {
-            value: crate::constant::Constant::True,
-            ty: IRType::Boolean,
+            value: ConstantValue::True,
+            ty: IRType::new(TypeKind::Boolean),
         })
     }
 
     /// Create a constant false value.
     pub fn const_false(&mut self) -> IRValueId {
         self.add_value(IRValue::Constant {
-            value: crate::constant::Constant::False,
-            ty: IRType::Boolean,
+            value: ConstantValue::False,
+            ty: IRType::new(TypeKind::Boolean),
         })
     }
 
@@ -198,11 +199,10 @@ impl IRBuilder {
 
     /// Emit an instruction that produces a value.
     pub fn emit_with_result(&mut self, kind: IRInstKind, ty: TypeId) -> (InstId, IRValueId) {
-        let result_id = self.add_value(IRValue::InstResult {
-            inst: InstId(0), // Will be patched
-            result_index: 0,
-            ty: self.function.module.types[ty.0].clone(),
-        });
+        let result_id = IRValueId(self.next_value_id);
+        self.next_value_id += 1;
+
+        let inst_id = InstId(self.current_block_instructions().len());
 
         let inst = IRInst {
             kind,
@@ -212,40 +212,34 @@ impl IRBuilder {
             side_effects: SideEffects::NONE,
         };
 
-        let block = self.current_block_instructions();
-        let inst_id = InstId(block.len());
-        // Patch the result to point to the correct instruction
-        if let IRValue::InstResult {
-            inst: ref mut i, ..
-        } = self.values[result_id.0]
-        {
-            *i = inst_id;
-        }
-        block.push(inst);
+        self.current_block_instructions().push(inst);
+
+        self.values.push(IRValue::InstResult {
+            inst: inst_id,
+            result_index: 0,
+            ty: IRType::new(TypeKind::Any),
+        });
 
         (inst_id, result_id)
     }
 
     /// Emit an arithmetic instruction.
     pub fn emit_add(&mut self, a: IRValueId, b: IRValueId) -> IRValueId {
-        let (_, result) =
-            self.emit_with_result(IRInstKind::Add, self.values[a.0].ty().clone().into());
+        let (_, result) = self.emit_with_result(IRInstKind::Add, TypeId(0));
         self.instructions_mut().last_mut().unwrap().operands = vec![a, b];
         self.instructions_mut().last_mut().unwrap().side_effects = SideEffects::NONE;
         result
     }
 
     pub fn emit_sub(&mut self, a: IRValueId, b: IRValueId) -> IRValueId {
-        let (_, result) =
-            self.emit_with_result(IRInstKind::Sub, self.values[a.0].ty().clone().into());
+        let (_, result) = self.emit_with_result(IRInstKind::Sub, TypeId(0));
         self.instructions_mut().last_mut().unwrap().operands = vec![a, b];
         self.instructions_mut().last_mut().unwrap().side_effects = SideEffects::NONE;
         result
     }
 
     pub fn emit_mul(&mut self, a: IRValueId, b: IRValueId) -> IRValueId {
-        let (_, result) =
-            self.emit_with_result(IRInstKind::Mul, self.values[a.0].ty().clone().into());
+        let (_, result) = self.emit_with_result(IRInstKind::Mul, TypeId(0));
         self.instructions_mut().last_mut().unwrap().operands = vec![a, b];
         self.instructions_mut().last_mut().unwrap().side_effects = SideEffects::NONE;
         result
@@ -255,16 +249,19 @@ impl IRBuilder {
 
     /// Emit an unconditional branch.
     pub fn emit_br(&mut self, target: BlockId) {
-        self.emit(IRInstKind::Br { target });
+        let label = Label(target.0 as u32);
+        self.emit(IRInstKind::Br { target: label });
     }
 
     /// Emit a conditional branch.
     pub fn emit_br_if(&mut self, cond: IRValueId, true_target: BlockId, false_target: BlockId) {
+        let true_label = Label(true_target.0 as u32);
+        let false_label = Label(false_target.0 as u32);
         self.emit_with_side_effects(
             IRInstKind::BrIf {
                 cond,
-                true_target,
-                false_target,
+                true_target: true_label,
+                false_target: false_label,
             },
             SideEffects {
                 may_raise: false,

@@ -18,6 +18,7 @@ memoffset = "0.9"
 num-bigint = { version = "0.4", features = ["serde"] }
 cfg-if = "1"
 num_cpus = "1"
+dashmap = "5"
 
 [features]
 default = ["smp"]

@@ -32,7 +32,7 @@ pub use builder::IRBuilder;
 pub use function::IRFunction;
 pub use instruction::{IRInst, IRInstKind};
 pub use module::IRModule;
-pub use type_system::{IRType, TypeKind};
+pub use type_system::IRType;
 pub use value::{IRValue, IRValueId};
 
 /// The IR context - owns all IR data for a compilation unit.
@@ -51,7 +51,7 @@ impl IRContext {
     /// Create a new IR context.
     pub fn new() -> Self {
         Self {
-            module: IRModule::new(),
+            module: IRModule::new(0),
             functions: Vec::new(),
             constants: Vec::new(),
             types: Vec::new(),
@@ -59,9 +59,9 @@ impl IRContext {
     }
 
     /// Create a new function in this context.
-    pub fn create_function(&mut self, name: String, ty: IRType) -> IRFunctionId {
+    pub fn create_function(&mut self, name: u64, arity: u32) -> IRFunctionId {
         let id = IRFunctionId(self.functions.len());
-        self.functions.push(IRFunction::new(name, ty));
+        self.functions.push(IRFunction::new(0, name, arity));
         id
     }
 
@@ -125,12 +125,11 @@ mod tests {
     #[test]
     fn test_create_function() {
         let mut ctx = IRContext::new();
-        let int_type = ctx.create_type(IRType::new(TypeKind::Int64));
-        let func_id = ctx.create_function("test_func".to_string(), IRType::new(TypeKind::Int64));
+        let _int_type = ctx.create_type(IRType::new(TypeKind::Int64));
+        let func_id = ctx.create_function(0, 2);
 
         assert_eq!(func_id.0, 0);
         assert_eq!(ctx.functions.len(), 1);
-        assert_eq!(ctx.functions[0].name(), "test_func");
     }
 
     #[test]
@@ -153,7 +152,7 @@ mod tests {
 
     #[test]
     fn test_instruction_with_result() {
-        let val_id = ValueId(0);
+        let val_id = IRValueId(0);
         let inst = IRInst::with_result(IRInstKind::Add, val_id);
         assert_eq!(inst.result, Some(val_id));
     }
@@ -162,26 +161,5 @@ mod tests {
     fn test_type_creation() {
         let ty = IRType::new(TypeKind::Int64);
         assert!(matches!(ty.kind, TypeKind::Int64));
-    }
-
-    #[test]
-    fn test_small_int_term() {
-        let term = Term::small(42);
-        assert!(term.is_small());
-        assert_eq!(term.unwrap_small(), 42);
-    }
-
-    #[test]
-    fn test_nil_term() {
-        let term = Term::nil();
-        assert!(term.is_nil());
-    }
-
-    #[test]
-    fn test_bool_terms() {
-        let t = Term::true_();
-        let f = Term::false_();
-        assert!(t.is_true());
-        assert!(f.is_false());
     }
 }

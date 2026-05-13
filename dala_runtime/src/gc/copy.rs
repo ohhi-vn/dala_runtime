@@ -4,10 +4,9 @@
 //! adapted for the BEAM process model. Live objects are copied from
 //! the old heap to a new heap, and all references are updated.
 
+use crate::process::Process;
 use crate::term::Term;
 use crate::term::tags;
-use crate::process::Process;
-use crate::gc::rootset::RootSet;
 
 /// Perform copying collection for a process.
 ///
@@ -21,7 +20,6 @@ use crate::gc::rootset::RootSet;
 /// Must be called at a safepoint with a valid root set.
 pub unsafe fn copy_collection(
     process: &mut Process,
-    rootset: &RootSet,
     min_size: usize,
 ) -> Result<*mut Term, &'static str> {
     // Calculate new heap size
@@ -43,30 +41,28 @@ pub unsafe fn copy_collection(
     let mut scan_ptr = new_heap;
 
     // Copy stack roots
-    for &root_ptr in &rootset.stack_roots {
-        let term = *root_ptr;
-        if term.is_boxed() || term.is_list() {
-            let new_addr = copy_object(root_ptr, &mut scan_ptr, new_heap);
-            // Update the root pointer
-            std::ptr::write(root_ptr as *mut Term, Term::from_raw(new_addr));
+    {
+        let stack_start = process.stack_ptr;
+        let stack_end = process.stack_top;
+        let mut ptr = stack_start;
+        while ptr < stack_end {
+            let term = &*ptr;
+            if term.is_boxed() || term.is_list() {
+                let new_addr = copy_object(ptr, &mut scan_ptr, new_heap);
+                std::ptr::write(ptr, Term::from_raw(new_addr as u64));
+            }
+            ptr = ptr.add(1);
         }
     }
 
     // Copy register roots
-    for &root_ptr in &rootset.register_roots {
-        let term = *root_ptr;
+    for i in 0..256 {
+        let term = &process.registers.x[i];
         if term.is_boxed() || term.is_list() {
-            let new_addr = copy_object(root_ptr, &mut scan_ptr, new_heap);
-            std::ptr::write(root_ptr as *mut Term, Term::from_raw(new_addr));
-        }
-    }
-
-    // Copy catch stack roots
-    for &root_ptr in &rootset.catch_roots {
-        let term = *root_ptr;
-        if term.is_boxed() || term.is_list() {
-            let new_addr = copy_object(root_ptr, &mut scan_ptr, new_heap);
-            std::ptr::write(root_ptr as *mut Term, Term::from_raw(new_addr));
+            // Need to copy the pointed-to object and update the register
+            let raw = term.to_raw();
+            let new_addr = copy_object(raw as *const Term, &mut scan_ptr, new_heap);
+            process.registers.x[i] = Term::from_raw(new_addr as u64);
         }
     }
 
@@ -80,7 +76,7 @@ pub unsafe fn copy_collection(
 
     // Free old heap
     let old_heap_start = process.heap_start();
-    let old_size = process.heap_top as usize - old_heap_start as usize;
+    let old_size = (process.heap_top as usize) - (old_heap_start as usize);
     if old_size > 0 {
         let old_layout = std::alloc::Layout::array::<Term>(old_size).unwrap();
         std::alloc::dealloc(old_heap_start as *mut u8, old_layout);
@@ -114,41 +110,32 @@ unsafe fn copy_object(src: *const Term, scan_ptr: &mut *mut Term, new_heap: *mut
     };
 
     // Check if already copied (forwarding pointer technique)
-    // If the pointer is within the new heap, it's already been copied
     if ptr >= new_heap && ptr < *scan_ptr {
-        // Already copied - read the forwarding address
-        let header = *ptr;
-        if header.to_raw() & 0x1 == 1 {
-            // This is a forwarding pointer (odd tagged)
-            return header.to_raw() - 1;
+        let header = (*ptr).to_raw();
+        if header & 0x1 == 1 {
+            return (header - 1) as usize;
         }
     }
 
     // Copy the object based on its type
-    let (size, new_addr) = match if term.is_list() {
+    let new_addr = *scan_ptr;
+    if term.is_list() {
         // Cons cell: 2 words (head, tail)
-        let new_addr = *scan_ptr;
-        **scan_ptr = *ptr;          // head
-        *(*scan_ptr).add(1) = *ptr.add(1); // tail
+        **scan_ptr = *ptr;
+        *(*scan_ptr).add(1) = *ptr.add(1);
         *scan_ptr = scan_ptr.add(2);
-        (2, new_addr)
     } else {
         // Boxed value: header + arity words
-        let header = *ptr;
+        let header = (*ptr).to_raw();
         let arity = Term::header_arity(header);
-        let total_words = 1 + arity; // header + data
-        let new_addr = *scan_ptr;
-
-        // Copy all words
+        let total_words = 1 + arity;
         for i in 0..total_words {
             *scan_ptr.add(i) = *ptr.add(i);
         }
         *scan_ptr = scan_ptr.add(total_words);
-        (total_words, new_addr)
     };
 
     // Write forwarding pointer at the old location
-    // Use odd tag to distinguish from normal headers
     let forward_tag = Term::from_raw((new_addr as u64) | 0x1);
     std::ptr::write(ptr as *mut Term, forward_tag);
 
@@ -163,16 +150,16 @@ unsafe fn copy_object(src: *const Term, scan_ptr: &mut *mut Term, new_heap: *mut
 unsafe fn update_pointers(term: &mut Term, base: *const Term, offset: usize) {
     if term.is_boxed() {
         let ptr = term.get_boxed_ptr();
-        if ptr >= base {
+        if (ptr as usize) >= (base as usize) {
             // Internal pointer - needs updating
             let new_ptr = (ptr as usize + offset) as *const Term;
-            *term = Term::from_raw(new_ptr as u64 | tags::PRIMARY_TAG_BOXED);
+            *term = Term::from_raw(new_ptr as u64 | crate::term::tags::PRIMARY_TAG_BOXED);
         }
     } else if term.is_list() {
         let ptr = term.get_list_ptr();
-        if ptr >= base {
+        if (ptr as usize) >= (base as usize) {
             let new_ptr = (ptr as usize + offset) as *const Term;
-            *term = Term::from_raw(new_ptr as u64 | tags::PRIMARY_TAG_LIST);
+            *term = Term::from_raw(new_ptr as u64 | crate::term::tags::PRIMARY_TAG_LIST);
         }
     }
 }

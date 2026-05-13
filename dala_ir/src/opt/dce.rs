@@ -5,10 +5,10 @@
 //!    and used values.
 //! 2. Sweep phase: Remove unreachable blocks and unused instructions.
 
-use crate::function::{BasicBlock, IRFunction};
-use crate::instruction::{IRInst, IRInstKind};
-use crate::value::IRValueId;
 use crate::BlockId;
+use crate::function::IRFunction;
+use crate::instruction::{IRInstKind, Label};
+use crate::value::IRValueId;
 
 /// Eliminate dead code from a function.
 ///
@@ -31,7 +31,7 @@ pub fn eliminate_dead_code(func: &mut IRFunction) -> bool {
 /// Mark all reachable blocks from the entry block.
 fn mark_reachable(func: &IRFunction) -> Vec<bool> {
     let mut reachable = vec![false; func.blocks.len()];
-    let mut worklist = vec![func.entry_block];
+    let mut worklist: Vec<BlockId> = vec![func.entry_block];
 
     while let Some(block_id) = worklist.pop() {
         if reachable[block_id.0] {
@@ -41,8 +41,9 @@ fn mark_reachable(func: &IRFunction) -> Vec<bool> {
 
         let block = &func.blocks[block_id.0];
         for successor in &block.successors {
-            if !reachable[successor.0] {
-                worklist.push(*successor);
+            let succ_block = BlockId(successor.0 as usize);
+            if !reachable[successor.0 as usize] {
+                worklist.push(succ_block);
             }
         }
     }

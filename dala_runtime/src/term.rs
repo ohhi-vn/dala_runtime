@@ -158,6 +158,11 @@ impl Term {
     }
 
     #[inline]
+    pub fn is_fun(self) -> bool {
+        self.is_boxed() && self.header_tag() == tags::HEADER_FUN
+    }
+
+    #[inline]
     pub fn is_catch(self) -> bool {
         self.0 & tags::IMMED1_TAG_MASK == tags::IMMED1_IMMED2
             && self.0 & tags::IMMED2_TAG_MASK == tags::IMMED2_CATCH
@@ -226,7 +231,7 @@ impl Term {
 
     #[inline]
     pub fn header(self) -> u64 {
-        unsafe { *self.get_boxed_ptr() }
+        unsafe { (*self.get_boxed_ptr()).to_raw() }
     }
 
     #[inline]
@@ -273,11 +278,7 @@ impl Term {
 
     #[inline]
     pub fn bool(b: bool) -> Self {
-        if b {
-            Term::true_()
-        } else {
-            Term::false_()
-        }
+        if b { Term::true_() } else { Term::false_() }
     }
 
     #[inline]
@@ -366,6 +367,12 @@ impl Term {
 
             Some(BigInt::from_bytes_le(sign, mag_bytes))
         }
+    }
+}
+
+impl Default for Term {
+    fn default() -> Self {
+        Self::nil()
     }
 }
 

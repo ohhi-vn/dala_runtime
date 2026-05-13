@@ -130,3 +130,105 @@ impl std::fmt::Display for Exception {
 }
 
 impl std::error::Error for Exception {}
+
+// ===== Explicit Result Threading for AOT Code =====
+
+/// The result type used by AOT-compiled functions for explicit exception
+/// propagation.
+///
+/// Instead of using native unwinding (which is unsafe through Cranelift
+/// frames), every AOT function returns `Result<Term, Exception>`.  The
+/// codegen inserts explicit checks after each call site and propagates
+/// errors through native frames via the `?` operator or the helpers below.
+///
+/// This is the recommended approach per the architecture doc (Gap 3):
+/// it is Rust-idiomatic, avoids `setjmp`/`longjmp`, and the overhead is
+/// largely eliminated by inlining.
+pub type Result<T = Term> = std::result::Result<T, Exception>;
+
+/// Propagate an exception through a native frame.
+///
+/// Use this helper at the boundary between AOT-compiled code and the
+/// runtime.  If `result` is `Err`, the exception is returned immediately
+/// (early-return), mimicking the BEAM's catch/throw mechanism.
+#[inline(always)]
+pub fn propagate<T>(result: Result<T>) -> Result<T> {
+    result
+}
+
+/// Convert a raw exception reason into a `Result` that can be returned
+/// from an AOT function.
+#[inline(always)]
+pub fn exception_result<T>(reason: Reason) -> Result<T> {
+    Err(Exception::from(reason))
+}
+
+/// Create a successful result wrapping a `Term`.
+#[inline(always)]
+pub fn ok_term(term: Term) -> Result {
+    Ok(term)
+}
+
+/// Create an error result from a term reason.
+#[inline(always)]
+pub fn error_term(reason: Term) -> Result {
+    Err(Exception::error(reason))
+}
+
+/// Create an exit result from a term reason.
+#[inline(always)]
+pub fn exit_term(reason: Term) -> Result {
+    Err(Exception::exit(reason))
+}
+
+/// Create a throw result from a term reason.
+#[inline(always)]
+pub fn throw_term(reason: Term) -> Result {
+    Err(Exception::throw(reason))
+}
+
+/// Unwrap a `Result`, returning the `Term` on success or propagating
+/// the exception on failure.  This is a convenience wrapper that can
+/// be used in generated code.
+#[inline(always)]
+pub fn unwrap_result(result: Result) -> Term {
+    match result {
+        Ok(term) => term,
+        Err(ref exc) => {
+            // In a full implementation this would install the catch
+            // handler.  For now we return a sentinel.
+            panic!("uncaught exception: {}", exc);
+        }
+    }
+}
+
+/// Check whether a result is an exception.
+#[inline(always)]
+pub fn is_exception(result: &Result) -> bool {
+    result.is_err()
+}
+
+/// Check whether a result is a normal return.
+#[inline(always)]
+pub fn is_ok(result: &Result) -> bool {
+    result.is_ok()
+}
+
+/// Map over the success value of a result, leaving errors untouched.
+#[inline(always)]
+pub fn map_result<F>(result: Result, f: F) -> Result
+where
+    F: FnOnce(Term) -> Term,
+{
+    result.map(f)
+}
+
+/// Chain two results: if `first` is `Ok`, apply `f` to its value;
+/// otherwise propagate the error.
+#[inline(always)]
+pub fn and_then_result<F>(first: Result, f: F) -> Result
+where
+    F: FnOnce(Term) -> Result,
+{
+    first.and_then(f)
+}

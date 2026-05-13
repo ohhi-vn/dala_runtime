@@ -12,8 +12,7 @@ use smallvec::SmallVec;
 
 use crate::code::CodePtr;
 use crate::mailbox::Mailbox;
-use crate::term::{Tag, Term};
-use crate::trap::TrapFrame;
+use crate::term::{RegisterFile, Term};
 
 /// Flags on a process
 bitflags::bitflags! {
@@ -330,10 +329,12 @@ impl Process {
         let old_size = self.heap_top as usize - self.heap_start as usize;
         let new_size = old_size * 2;
 
-        let old_layout = std::alloc::Layout::from_size_align_unchecked(
-            old_size * std::mem::size_of::<Term>(),
-            std::mem::align_of::<Term>(),
-        );
+        let old_layout = unsafe {
+            std::alloc::Layout::from_size_align_unchecked(
+                old_size * std::mem::size_of::<Term>(),
+                std::mem::align_of::<Term>(),
+            )
+        };
 
         let new_ptr = unsafe {
             std::alloc::realloc(
