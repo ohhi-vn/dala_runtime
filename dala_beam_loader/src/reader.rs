@@ -5,7 +5,7 @@
 //! a 4-byte ID and containing structured binary data.
 
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek};
 
 use crate::BeamModule;
 use crate::bytecode::{BeamFunction, BeamInstruction, BeamOperand, BeamRegister};

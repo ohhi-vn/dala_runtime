@@ -10,11 +10,10 @@
 //!   if x then ... → if true then ...  (constant propagation)
 
 use crate::constant::Constant;
-use crate::function::{BasicBlock, IRFunction};
+use crate::function::IRFunction;
 use crate::instruction::{IRInst, IRInstKind};
 use crate::type_system::IRType;
 use crate::value::{IRValue, IRValueId};
-use crate::BlockId;
 
 /// Propagate constants through the IR.
 ///
@@ -236,28 +235,19 @@ fn try_fold(inst: &IRInst, operands: &[Option<Constant>]) -> Option<Constant> {
             }
         }
 
-        // Branch optimization
-        IRInstKind::BrIf {
-            cond,
-            true_target,
-            false_target,
-        } => {
-            if let Some(cond_val) = lookup_constant(&vec![None; 0], *cond) {
-                // We can resolve the branch
-                // This is handled separately in simplify_cfg
-                None
-            } else {
-                None
-            }
-        }
-
         _ => None,
     }
 }
 
-/// Fold constants: replace instructions with known constant results.
+/// Fold constant expressions: replace instructions whose operands are
+/// all constants with a `ConstSmallInt` / `ConstNil` / etc. instruction.
+///
+/// Returns true if any instruction was replaced.
 pub fn fold_constants(func: &mut IRFunction) -> bool {
+    use crate::instruction::IRInstKind;
+
     let mut changed = false;
+    let mut value_map: Vec<Option<Constant>> = vec![None; func.blocks.len() * 16];
 
     for block in &mut func.blocks {
         if !block.reachable {
@@ -265,16 +255,47 @@ pub fn fold_constants(func: &mut IRFunction) -> bool {
         }
 
         for inst in &mut block.instructions {
-            // For instructions that produce a constant result,
-            // we could replace all uses with the constant value.
-            // This is a simplified version.
-            if let Some(result) = inst.result {
-                if let Some(folded) = try_fold(inst, &vec![None; inst.operands.len()]) {
-                    // We can potentially replace uses of this result
-                    // with the folded constant. Full implementation
-                    // would require use-def chain analysis.
-                    let _ = folded;
-                    let _ = result;
+            // Resolve operands
+            let resolved: Vec<Option<Constant>> = inst
+                .operands
+                .iter()
+                .map(|&op| lookup_constant(&value_map, op))
+                .collect();
+
+            if inst.operands.len() == resolved.len() && resolved.iter().all(|c| c.is_some()) {
+                if let Some(folded) = try_fold(inst, &resolved) {
+                    // Replace the instruction with a constant load
+                    match &folded {
+                        Constant::Int(v) => {
+                            inst.kind = IRInstKind::ConstSmallInt { value: *v };
+                        }
+                        Constant::Nil => {
+                            inst.kind = IRInstKind::ConstNil;
+                        }
+                        Constant::True => {
+                            inst.kind = IRInstKind::ConstTrue;
+                        }
+                        Constant::False => {
+                            inst.kind = IRInstKind::ConstFalse;
+                        }
+                        Constant::Atom(a) => {
+                            inst.kind = IRInstKind::ConstAtom { index: *a };
+                        }
+                        Constant::Float(f) => {
+                            // Store float bits as a small-int constant for now
+                            let bits = f.to_bits() as i64;
+                            inst.kind = IRInstKind::ConstSmallInt { value: bits };
+                        }
+                        _ => continue,
+                    }
+                    inst.operands.clear();
+                    inst.side_effects = crate::instruction::SideEffects::NONE;
+                    if let Some(result) = inst.result {
+                        if let Some(slot) = value_map.get_mut(result.0) {
+                            *slot = Some(folded);
+                        }
+                    }
+                    changed = true;
                 }
             }
         }

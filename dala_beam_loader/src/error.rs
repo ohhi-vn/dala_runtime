@@ -1,5 +1,3 @@
-use std::io;
-
 /// Error type for BEAM loading operations.
 #[derive(Debug, thiserror::Error)]
 pub enum BeamError {

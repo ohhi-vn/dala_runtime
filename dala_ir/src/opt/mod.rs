@@ -14,6 +14,7 @@ pub mod cse;
 pub mod dce;
 pub mod simplify_cfg;
 pub mod tail_call;
+pub mod validation;
 
 use crate::function::IRFunction;
 

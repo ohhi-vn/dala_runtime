@@ -9,12 +9,11 @@
 
 use indexmap::IndexMap;
 
-use crate::TypeId;
-use crate::function::{BasicBlock, IRFunction};
-use crate::instruction::{IRInst, IRInstKind, Label, Reg, SideEffects};
+use crate::function::IRFunction;
+use crate::instruction::{IRInst, IRInstKind, Label, SideEffects};
 use crate::type_system::{ConstantValue, IRType, TypeKind};
 use crate::value::{IRValue, IRValueId};
-use crate::{BlockId, IRFunctionId, InstId};
+use crate::{BlockId, InstId, TypeId};
 
 /// The IR builder constructs SSA IR from BEAM bytecode.
 pub struct IRBuilder {

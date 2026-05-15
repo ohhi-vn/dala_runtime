@@ -7,7 +7,6 @@
 //! - Spill slot allocation
 //! - Stack map generation for GC
 
-use crate::TypeId;
 use crate::instruction::Reg;
 use crate::type_system::{IRType, TypeKind};
 

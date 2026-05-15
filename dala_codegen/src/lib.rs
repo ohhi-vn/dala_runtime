@@ -85,6 +85,7 @@ impl CompiledFunction {
 /// A code generator that translates Dala IR to native code.
 pub struct CodeGenerator {
     /// Configuration
+    #[allow(dead_code)]
     config: CodegenConfig,
 }
 

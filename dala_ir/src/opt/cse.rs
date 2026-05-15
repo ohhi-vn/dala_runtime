@@ -40,11 +40,6 @@ enum BinOp {
     Shl,
     Shr,
     Eq,
-    Ne,
-    Gt,
-    Ge,
-    Lt,
-    Le,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

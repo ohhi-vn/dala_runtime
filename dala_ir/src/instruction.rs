@@ -5,8 +5,7 @@
 //! flow graph. The IR is in SSA form, meaning each value is defined
 //! exactly once.
 
-use crate::type_system::IRType;
-use crate::value::{IRValueId, ValueUse};
+use crate::value::IRValueId;
 
 /// A register or stack slot reference in the BEAM context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

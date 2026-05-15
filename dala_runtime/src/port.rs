@@ -93,7 +93,7 @@ impl PortRegistry {
     /// Remove a port.
     pub fn remove(&self, id: &PortId) -> Option<Arc<Mutex<Port>>> {
         let mut ports = self.ports.lock().unwrap();
-        ports.remove(id)
+        ports.swap_remove(id)
     }
 }
 

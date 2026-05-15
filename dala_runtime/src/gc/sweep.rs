@@ -9,6 +9,7 @@
 //! For the copying collector, the sweep phase is minimal since most
 //! work is done during the copy phase.
 
+#[allow(unused_imports)]
 use crate::term::Term;
 
 /// Sweep old heap after copying collection.

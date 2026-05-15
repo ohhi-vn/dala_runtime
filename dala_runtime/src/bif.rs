@@ -10,7 +10,6 @@
 use crate::exception::Exception;
 use crate::process::Process;
 use crate::term::Term;
-use crate::term::tags;
 
 /// Result type for BIF execution.
 pub type BifResult = Result<Term, Exception>;
@@ -182,7 +181,9 @@ pub unsafe fn is_map_1(_proc: &mut Process, args: &[Term]) -> BifResult {
 /// `erlang:is_number/1`
 pub unsafe fn is_number_1(_proc: &mut Process, args: &[Term]) -> BifResult {
     check_arity!(args, 1);
-    Ok(Term::bool(args[0].is_small() || args[0].is_float()))
+    Ok(Term::bool(
+        args[0].is_small() || args[0].is_float() || args[0].is_big(),
+    ))
 }
 
 /// `erlang:is_float/1`
@@ -205,10 +206,16 @@ pub unsafe fn neq_2(_proc: &mut Process, args: &[Term]) -> BifResult {
     Ok(Term::bool(args[0] != args[1]))
 }
 
-/// `erlang:exact_eq/2` - exact term equality.
+/// `erlang:exact_eq/2` - exact term equality (bitwise).
 pub unsafe fn exact_eq_2(_proc: &mut Process, args: &[Term]) -> BifResult {
     check_arity!(args, 2);
-    Ok(Term::bool(args[0] == args[1]))
+    Ok(Term::bool(args[0].to_raw() == args[1].to_raw()))
+}
+
+/// `erlang:exact_ne/2` - exact term inequality (bitwise).
+pub unsafe fn exact_ne_2(_proc: &mut Process, args: &[Term]) -> BifResult {
+    check_arity!(args, 2);
+    Ok(Term::bool(args[0].to_raw() != args[1].to_raw()))
 }
 
 // ===== Process BIFs =====
@@ -220,22 +227,25 @@ pub unsafe fn self_0(proc: &mut Process, _args: &[Term]) -> BifResult {
 }
 
 /// `erlang:spawn/3` - spawn a new process.
-pub unsafe fn spawn_3(proc: &mut Process, args: &[Term]) -> BifResult {
+pub unsafe fn spawn_3(_proc: &mut Process, args: &[Term]) -> BifResult {
     check_arity!(args, 3);
-    // args[0] = module, args[1] = function, args[2] = args list
     let _module = args[0].get_atom_index().ok_or_else(|| badarg())?;
     let _function = args[1].get_atom_index().ok_or_else(|| badarg())?;
-    // Actual spawn would need the scheduler
-    Ok(Term::small(0)) // Placeholder
+    if !args[2].is_list() && !args[2].is_nil() {
+        return Err(badarg());
+    }
+    // TODO: actual spawn via scheduler; return new PID
+    Ok(Term::small(0))
 }
 
 /// `erlang:send/2` - send a message to a process.
-pub unsafe fn send_2(proc: &mut Process, args: &[Term]) -> BifResult {
+pub unsafe fn send_2(_proc: &mut Process, args: &[Term]) -> BifResult {
     check_arity!(args, 2);
-    let _dest = args[0];
-    let _msg = args[1];
-    // Actual send would need the scheduler
-    Ok(args[0]) // Returns destination
+    if !args[0].is_pid() && !args[0].is_atom() {
+        return Err(badarg());
+    }
+    // TODO: actual send via scheduler
+    Ok(args[1]) // Returns the message
 }
 
 // ===== Error BIFs =====
@@ -249,6 +259,8 @@ pub unsafe fn error_1(_proc: &mut Process, args: &[Term]) -> BifResult {
 /// `erlang:error/2` - raise an error with arguments.
 pub unsafe fn error_2(_proc: &mut Process, args: &[Term]) -> BifResult {
     check_arity!(args, 2);
+    // args[0] = reason, args[1] = arguments (for stacktrace)
+    let _ = args[1]; // TODO: build stacktrace from args[1]
     Err(Exception::error(args[0]))
 }
 
@@ -306,10 +318,17 @@ pub unsafe fn length_1(_proc: &mut Process, args: &[Term]) -> BifResult {
     }
     let mut len: i64 = 0;
     let mut current = args[0];
-    while current.is_list() {
+    loop {
+        if current.is_nil() {
+            break;
+        }
+        if !current.is_list() {
+            return Err(badarg());
+        }
         len += 1;
-        // In real implementation, follow cons cells
-        break; // Simplified
+        // Follow the tail of the cons cell
+        let ptr = current.get_list_ptr();
+        current = unsafe { *ptr.add(1) };
     }
     Ok(Term::small(len))
 }
@@ -351,8 +370,8 @@ pub unsafe fn nodes_0(_proc: &mut Process, _args: &[Term]) -> BifResult {
 /// `erlang:integer_to_list/1`
 pub unsafe fn integer_to_list_1(_proc: &mut Process, args: &[Term]) -> BifResult {
     check_arity!(args, 1);
-    let val = args[0].get_small().ok_or_else(|| badarg())?;
-    // In real implementation, would allocate a list on the process heap
+    let _val = args[0].get_small().ok_or_else(|| badarg())?;
+    // TODO: allocate a list of digits on the process heap
     Ok(Term::nil()) // Placeholder
 }
 
@@ -433,6 +452,7 @@ pub fn register_all_bifs() -> Vec<BifDescriptor> {
     let eq = crate::atom::atom("==");
     let neq = crate::atom::atom("/=");
     let exact_eq = crate::atom::atom("=:=");
+    let exact_ne = crate::atom::atom("=/=");
     let self_ = crate::atom::atom("self");
     let spawn = crate::atom::atom("spawn");
     let send = crate::atom::atom("send");
@@ -475,6 +495,7 @@ pub fn register_all_bifs() -> Vec<BifDescriptor> {
         bif!(erlang, eq, 2, eq_2),
         bif!(erlang, neq, 2, neq_2),
         bif!(erlang, exact_eq, 2, exact_eq_2),
+        bif!(erlang, exact_ne, 2, exact_ne_2),
         bif!(erlang, self_, 0, self_0),
         bif!(erlang, spawn, 3, spawn_3),
         bif!(erlang, send, 2, send_2),

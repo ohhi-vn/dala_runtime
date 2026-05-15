@@ -4,6 +4,7 @@
 //! The BEAM VM has a global atom table that maps atom IDs to string names.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::sync::RwLock;
 
 /// The global atom table.
@@ -114,20 +115,11 @@ impl Default for AtomTable {
     }
 }
 
-static mut ATOM_TABLE: Option<AtomTable> = None;
-static ATOM_INIT: std::sync::Once = std::sync::Once::new();
+static ATOM_TABLE: OnceLock<AtomTable> = OnceLock::new();
 
 /// Get a reference to the global atom table.
 pub fn get_atom_table() -> &'static AtomTable {
-    unsafe {
-        ATOM_INIT.call_once(|| {
-            ATOM_TABLE = Some(AtomTable::new());
-        });
-        match ATOM_TABLE {
-            Some(ref table) => table,
-            None => unreachable!(),
-        }
-    }
+    ATOM_TABLE.get_or_init(AtomTable::new)
 }
 
 /// Look up or insert an atom by name.

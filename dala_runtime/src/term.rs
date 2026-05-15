@@ -74,7 +74,12 @@ impl Term {
 
     #[inline]
     pub fn is_small(self) -> bool {
-        (self.0 & tags::IMMED1_TAG_MASK) == tags::IMMED1_SMALL
+        // Small integers are encoded as (val << 4) | 0x0F.
+        // Bits 0-1 = 0b11 (IMMED1 primary tag).
+        // Bits 2-3 = 0b11 (distinguishes from other IMMED1 types).
+        // Bits 4-63 = the signed integer value.
+        // Note: This encoding supports the full i64 range.
+        (self.0 & 0x0F) == 0x0F
     }
 
     #[inline]
@@ -303,9 +308,13 @@ impl Term {
     /// The bignum is stored as:
     /// - Header word (HEADER_POS_BIG or HEADER_NEG_BIG with arity = number of 64-bit words + 1)
     /// - Sign word (0 for positive, 1 for negative)
-    /// - magnitude words (little-endian, as per BEAM convention)
+    /// - magnitude words (little-endian 64-bit limbs)
     pub fn bigint(big: &BigInt, heap: &mut Vec<Term>) -> Option<Self> {
         let (sign, magnitude) = big.to_bytes_le();
+        if magnitude.is_empty() {
+            // Zero is represented as a small integer
+            return Some(Term::small(0));
+        }
         let word_count = (magnitude.len() + 7) / 8; // Round up to 64-bit words
         let arity = word_count + 1; // +1 for sign word
 
@@ -326,7 +335,7 @@ impl Term {
         };
         heap.push(Term(sign_word));
 
-        // Magnitude words (pad to word boundary)
+        // Magnitude words as little-endian 64-bit limbs
         let mut mag_bytes = magnitude.to_vec();
         mag_bytes.resize(word_count * 8, 0u8);
         for chunk in mag_bytes.chunks_exact(8) {

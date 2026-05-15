@@ -6,8 +6,7 @@
 //! - Inspecting .beam files
 //! - Running compiled code
 
-use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use clap::Parser;
 
 mod cli;
 

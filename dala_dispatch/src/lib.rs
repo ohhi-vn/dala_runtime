@@ -7,9 +7,8 @@ pub use export_table::ExportTable;
 pub use hot_code::HotCodeManager;
 
 use dashmap::DashMap;
-use parking_lot::RwLock;
 
-use dala_ir::{IRFunction, IRModule};
+use dala_ir::IRModule;
 use dala_runtime::code::{CodePtr, CodeRegistry};
 
 use crate::hot_code::LazyFnRef;

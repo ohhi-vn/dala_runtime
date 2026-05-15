@@ -14,7 +14,7 @@ use crate::code::CodePtr;
 use crate::mailbox::Mailbox;
 use crate::term::{RegisterFile, Term};
 
-/// Flags on a process
+#[doc = "Flags on a process"]
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct ProcessFlags: u32 {
@@ -244,11 +244,11 @@ impl Process {
 
     /// Allocate raw space on the heap (for tuples, etc.).
     pub fn alloc_words(&mut self, count: usize) -> *mut Term {
-        let ptr = self.heap_ptr;
-        self.heap_ptr = unsafe { self.heap_ptr.add(count) };
-        if self.heap_ptr > self.heap_top {
+        if self.heap_ptr as usize + count * std::mem::size_of::<Term>() > self.heap_top as usize {
             self.grow_heap();
         }
+        let ptr = self.heap_ptr;
+        self.heap_ptr = unsafe { self.heap_ptr.add(count) };
         ptr
     }
 
@@ -327,7 +327,7 @@ impl Process {
     /// Grow the heap (double its size).
     fn grow_heap(&mut self) {
         let old_size = self.heap_top as usize - self.heap_start as usize;
-        let new_size = old_size * 2;
+        let new_size = (old_size * 2).max(233);
 
         let old_layout = unsafe {
             std::alloc::Layout::from_size_align_unchecked(
@@ -344,7 +344,10 @@ impl Process {
             ) as *mut Term
         };
 
+        // Update heap_ptr to point to the same offset in the new allocation
+        let heap_offset = self.heap_ptr as usize - self.heap_start as usize;
         self.heap_start = new_ptr;
+        self.heap_ptr = unsafe { new_ptr.add(heap_offset / std::mem::size_of::<Term>()) };
         self.heap_top = unsafe { new_ptr.add(new_size) };
     }
 }

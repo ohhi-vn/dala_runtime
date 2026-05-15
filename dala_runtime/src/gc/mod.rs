@@ -80,17 +80,18 @@ pub unsafe fn collect(process: &mut Process, need_words: usize) -> Result<(), &'
         need_words
     );
 
-    // 1. Calculate live size before building root set (needs &mut process)
+    // 1. Build root set first (needs &mut process)
+    let rootset = RootSet::from_process(process);
+
+    // 2. Calculate live size from root set + heap
     let live_size = (process.heap_ptr as usize) - (process.heap_start() as usize);
     let new_size = (live_size * 2).max(need_words).max(233);
 
-    // 2. Build root set (needs &mut process)
-    {
-        let _rootset = RootSet::from_process(process);
-    }
-
     // 3. Perform copying collection (needs &mut process)
     let new_heap = copy_collection(process, new_size)?;
+
+    // 4. Update root pointers after collection
+    // (copy_collection already updates registers and stack in-place)
 
     // 4. Update process heap pointer
     process.heap_ptr = new_heap;

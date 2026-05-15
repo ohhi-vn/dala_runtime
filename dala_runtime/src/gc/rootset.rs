@@ -44,11 +44,11 @@ impl<'a> RootSet<'a> {
         // For now, we conservatively scan all stack slots.
         let mut ptr = stack_start;
         while ptr < stack_end {
-            let term = &*ptr;
+            let term = unsafe { &*ptr };
             if term.is_boxed() || term.is_list() {
                 rootset.stack_roots.push(ptr);
             }
-            ptr = ptr.add(1);
+            ptr = unsafe { ptr.add(1) };
         }
 
         // Scan X registers for roots
@@ -62,12 +62,10 @@ impl<'a> RootSet<'a> {
         }
 
         // Scan catch stack for roots
-        // Catch frames save stack/heap pointers but not X registers directly
-        // The X registers are saved on the process stack, which is already scanned above
-        for _frame in &process.catches {
-            // Catch frames contain stack_pointer, heap_pointer, cp for unwinding
-            // No additional GC roots in catch frames themselves
-        }
+        // Catch frames save stack/heap pointers but not X registers directly.
+        // The X registers are saved on the process stack, which is already
+        // scanned above, so we just note the catch frame count.
+        let _ = process.catches.len();
 
         rootset
     }

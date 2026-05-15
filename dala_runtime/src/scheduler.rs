@@ -174,6 +174,13 @@ impl Scheduler {
                 process.status = crate::process::ProcessStatus::Running;
                 process.reset_reductions();
                 log::trace!("Running process {} on scheduler {}", pid, id);
+
+                // Execute the process's current function.
+                // In a full implementation, this would call through the
+                // code pointer (AOT) or interpret bytecode.
+                // For now, we mark it as runnable for the next scheduling
+                // quantum.
+                let _ = process.consume_reductions(1);
                 process.status = crate::process::ProcessStatus::Runnable;
             }
         }
