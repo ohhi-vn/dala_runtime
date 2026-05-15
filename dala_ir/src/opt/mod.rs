@@ -12,6 +12,7 @@
 pub mod const_prop;
 pub mod cse;
 pub mod dce;
+pub mod pattern_match;
 pub mod simplify_cfg;
 pub mod tail_call;
 pub mod validation;
@@ -58,6 +59,11 @@ pub fn optimize(func: &mut IRFunction) {
         if tail_call::analyze(func) {
             changed = true;
         }
+
+        // Pattern matching optimization
+        if pattern_match::optimize(func) {
+            changed = true;
+        }
     }
 
     log::debug!("Optimization converged after {} iterations", iteration);
@@ -72,6 +78,7 @@ pub fn run_pass(func: &mut IRFunction, pass_name: &str) -> bool {
         "cse" => cse::eliminate_common_subexprs(func),
         "simplify-cfg" => simplify_cfg::simplify(func),
         "tail-call" => tail_call::analyze(func),
+        "pattern-match" => pattern_match::optimize(func),
         _ => {
             log::warn!("Unknown optimization pass: {}", pass_name);
             false

@@ -30,9 +30,12 @@ pub mod value;
 // Re-exports
 pub use builder::IRBuilder;
 pub use function::IRFunction;
-pub use instruction::{IRInst, IRInstKind};
+pub use instruction::{IRInst, IRInstKind, TensorOpKind};
 pub use module::IRModule;
-pub use type_system::IRType;
+pub use type_system::{
+    ActorLifecycle, ConstantValue, IRType, MessagePriority, NativeResourceKind, TensorDtype,
+    TypeDescriptor,
+};
 pub use value::{IRValue, IRValueId};
 
 /// The IR context - owns all IR data for a compilation unit.

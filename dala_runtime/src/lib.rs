@@ -7,12 +7,14 @@
 #![warn(missing_docs)]
 #![deny(clippy::all)]
 
+pub mod ai;
 pub mod atom;
 pub mod bif;
 pub mod code;
 pub mod exception;
 pub mod gc;
 pub mod mailbox;
+pub mod memory;
 pub mod port;
 pub mod process;
 pub mod scheduler;

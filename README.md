@@ -1,64 +1,107 @@
-# Dala AOT — BEAM Ahead-of-Time Compiler
+# Dala Compiler Runtime — Actor-Native Mobile Runtime
 
-A Rust-based AOT compiler backend for the BEAM VM (Erlang/OTP), inspired by HiPE but with a modern architecture. This project implements a second execution backend for BEAM that compiles bytecode to native ARM64/x86 machine code.
+A Rust-based actor-native mobile runtime with integrated AI orchestration and typed native execution. Inspired by BEAM semantics but designed from the ground up for mobile constraints: startup time, battery, thermal, memory locality, offline AI, UI synchronization, and native platform integration.
 
 ## Architecture
 
 ```
 Elixir/Erlang
     ↓
-Core Erlang
+BEAM SSA
     ↓
-BEAM Compiler (existing)
+Dala Typed IR  ←─── Stable shapes, message types, tensor types, capabilities
     ↓
-.beam files
+Optimization Passes ←─── Pattern matching, mailbox specialization, SIR promotion
     ↓
-Dala AOT Compiler (this project)
-    ↓
-ARM64/x86 native binaries
-    ↓
-BEAM Runtime (scheduler + GC + process model)
+Backend Lowering
+    ├── Interpreter (baseline)
+    ├── Cranelift (JIT, mobile-friendly)
+    └── LLVM (future AOT)
 ```
 
-**Key insight:** This is NOT "compile Erlang to machine code." It is building a BEAM-compatible runtime backend with native execution. OTP runtime, scheduler, GC, and process model all still exist — only the execution engine changes.
+## Key Architectural Decisions
+
+### 1. Dala Typed IR (Stable SSA)
+
+The IR is the central hub. Every optimization, backend, and runtime feature flows through it:
+
+- **Stable tuple shapes**: Fixed-layout tuples with known element types → compact native representation
+- **Message types**: Expected message shapes for mailbox fast-path matching
+- **Actor types**: Protocol-aware actor references with lifecycle metadata
+- **Tensor types**: Shape + dtype for zero-copy AI interop
+- **Capability types**: Typed native resource handles (GPU, files, sockets)
+
+### 2. Semantic Layer vs Execution Backend
+
+Clean separation between:
+
+**Semantic Layer** (actors, mailboxes, supervisors, reductions, pattern matching, fault handling)
+**Execution Backend** (SSA lowering, register allocation, vectorization, machine code)
+
+This gives huge long-term flexibility — swap the execution backend without changing actor semantics.
+
+### 3. Specialized Mailbox System
+
+Four priority queues (Critical, High, Normal, Low) with:
+- Type-tag indexed fast-path for `receive`
+- Stable message layouts for zero-copy delivery
+- Back-pressure when queues are full
+
+### 4. Multiple Memory Regions
+
+Instead of a single BEAM-style heap:
+
+| Region | Purpose |
+|--------|---------|
+| Actor Heap | Short-lived BEAM terms, GC'd |
+| Stable Immutable Region (SIR) | Long-lived, never rescanned (UI trees, configs, schemas) |
+| Binary Region | Large binaries, refcounted |
+| Tensor Region | GPU/NN buffers, zero-copy |
+| Native Resource Region | Capability-tracked handles |
+| Arena Allocators | Frame-scoped, bulk-free |
+
+### 5. QoS-Aware Scheduler
+
+Designed for mobile AI workloads:
+- **Thermal-aware**: Reduces inference priority when device is hot
+- **Battery-aware**: Deprioritizes background work when battery is low
+- **QoS classes**: Realtime, UserFacing, Utility, Background
+- **Inference-priority actors**: Deadline-aware scheduling for AI workers
+
+### 6. AI Runtime Layer
+
+First-class runtime support for AI:
+- **Inference Workers**: Dedicated workers with thermal throttling
+- **Tensor Resources**: Managed GPU/ANE buffers with zero-copy interop
+- **Streaming Pipelines**: Actor-driven real-time inference
+- **Model Lifecycle**: Load, cache, version, unload with proper cleanup
+
+### 7. Capability-Based Native Resources
+
+Instead of arbitrary native handles:
+- Actor-owned capabilities with reference tracking
+- Supervised native resources
+- Transferable ownership
+- Automatic cleanup on actor termination
+
+### 8. Pattern Matching Optimization
+
+Typed pattern matching + AOT:
+- Tagged dispatch for known message shapes
+- Specialized mailbox matching
+- Stable tuple destructuring without runtime type checks
+- Branch merging for identical pattern arms
 
 ## Crates
 
 | Crate | Description |
 |-------|-------------|
-| `dala_runtime` | Core runtime: process model, scheduler, GC, term representation, BIFs |
-| `dala_ir` | SSA intermediate representation with optimization passes |
+| `dala_runtime` | Core runtime: actors, scheduler, GC, mailboxes, memory regions, AI layer |
+| `dala_ir` | Typed SSA IR with optimization passes |
 | `dala_beam_loader` | Parses .beam files into IR |
 | `dala_codegen` | Cranelift-based native code generation (JIT + AOT) |
 | `dala_dispatch` | Module dispatch, hot code loading, export tables |
 | `dala_aot` | CLI tool orchestrating the full pipeline |
-
-## Features
-
-- **Process model**: Full BEAM process semantics (heap, stack, mailbox, reductions)
-- **Scheduler**: SMP scheduler with work-stealing and reduction counting
-- **GC**: Semi-space copying collector with stack maps and root set scanning
-- **SSA IR**: Typed SSA IR with dead code elimination, constant propagation, CSE, CFG simplification
-- **Code generation**: Cranelift-based native codegen supporting x86_64 and AArch64
-- **Mixed execution**: AOT-compiled and interpreted code can coexist
-- **BEAM compatibility**: All BEAM features preserved (pattern matching, exceptions, binaries, funs, ETS, NIFs)
-
-## Phased Implementation
-
-### Phase 1 — Minimal Execution (✓)
-- Arithmetic, function calls, tuples, pattern matching
-
-### Phase 2 — Scheduler Integration (✓)
-- Reductions, yielding, process switching
-
-### Phase 3 — GC Support (✓)
-- Heap allocation, root maps, safepoints
-
-### Phase 4 — OTP Compatibility (in progress)
-- Binaries, exceptions, funs, ETS, ports
-
-### Phase 5 — Optimization (planned)
-- SSA optimizations, inlining, specialization, escape analysis
 
 ## Building
 
@@ -75,59 +118,6 @@ cargo build --features jit
 # Build for AOT-only (iOS, no JIT)
 cargo build --features aot
 ```
-
-## Usage
-
-```bash
-# Compile a BEAM file to native code
-dala_aot compile --input my_module.beam --output my_module.o --target x86_64 --mode aot
-
-# Inspect a BEAM file
-dala_aot inspect --input my_module.beam
-
-# Run a BEAM module
-dala_aot run --input my_module.beam -- mixed
-
-# Disassemble BEAM bytecode
-dala_aot disasm --input my_module.beam
-```
-
-## Design Decisions
-
-### Why Cranelift?
-- **Fast compilation** (critical for JIT)
-- **Rust-native** (no C++ dependency)
-- **Mobile-friendly** (works on iOS, unlike LLVM)
-- **Simple embedding** (designed for JIT/embedded use)
-
-### Why SSA IR?
-BEAM opcodes are stack/register oriented and difficult to optimize directly. SSA form enables:
-- Dead code elimination
-- Constant propagation
-- Inlining
-- Register allocation
-- Loop optimization
-
-### Why not compile directly from BEAM?
-Direct compilation from BEAM bytecode would lose optimization opportunities. The IR layer acts as a bridge that decouples the BEAM frontend from the native backend.
-
-## iOS Deployment
-
-```
-mix compile
-    ↓
-beam files
-    ↓
-dala_aot --mode aot --target aarch64
-    ↓
-arm64 object files
-    ↓
-Xcode static library
-    ↓
-Signed IPA
-```
-
-No runtime code generation needed — fully avoids RWX pages, JIT restrictions, and App Store rejection.
 
 ## License
 

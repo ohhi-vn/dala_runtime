@@ -1,7 +1,8 @@
-# Dala Runtime — Technical Requirements & Implementation Plan
+# Dala Runtime — GC Requirements & Implementation Plan
 
 > A BEAM-inspired actor runtime with hybrid GC, stable subgraph optimization,
-> typed layouts, and AI/mobile-first memory architecture.
+> typed layouts, AI/mobile-first memory architecture, and multi-region memory
+> management.
 
 ---
 
@@ -13,7 +14,9 @@
 - UI reactive systems (LiveView-style)
 - High-concurrency actor workloads
 
-It is philosophically BEAM-derived but evolves the memory model to handle workloads BEAM was not designed for: large binaries, tensors, embeddings, stable long-lived immutable graphs, and native GPU/ML buffers.
+It is philosophically BEAM-derived but evolves the memory model to handle
+workloads BEAM was not designed for: large binaries, tensors, embeddings,
+stable long-lived immutable graphs, and native GPU/ML buffers.
 
 ---
 
@@ -27,36 +30,46 @@ It is philosophically BEAM-derived but evolves the memory model to handle worklo
 | Typed Layouts | Set-theoretic types inform GC at compile-time |
 | Mobile-Safe | Minimal write barriers; ARM cache-friendly |
 | AI-Ready | Region/arena for tensor lifetimes; native buffer support |
+| Multi-Region | Separate regions for different allocation patterns |
+| QoS-Aware | Thermal/battery-aware scheduling integrated with GC |
 
 ---
 
 ## 3. Memory Architecture
 
-### 3.1 Memory Spaces (4-tier)
+### 3.1 Memory Regions (6-tier)
 
 ```
-┌──────────────────────────────────────────┐
-│         Per-Process Young Heap           │  ← BEAM-style copying GC
-│  fast bump allocation, tiny, isolated    │
-└────────────────┬─────────────────────────┘
-                 │ promotion
-┌────────────────▼─────────────────────────┐
-│           Per-Process Old Heap           │  ← concurrent mark + incremental sweep
-│  longer-lived process-local structures   │
-└────────────────┬─────────────────────────┘
-                 │ stability detection
-┌────────────────▼─────────────────────────┐
-│        Stable Immutable Region (SIR)     │  ← blackened stable subgraphs
-│  immutable graphs, config maps, UI trees │
-│  rarely/never rescanned                  │
-└──────────────────────────────────────────┘
-┌──────────────────────────────────────────┐
-│     Large Object / Native Buffer Space   │  ← refcount + arena
-│  tensors, binaries, GPU buffers, arenas  │
-└──────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  Tier 1: Per-Process Actor Heap (Young + Old)            │
+│  Young: Copying GC (semi-space)                          │
+│  Old: Concurrent tri-color mark + incremental sweep      │
+│  Fast bump allocation, process-local, isolated           │
+├──────────────────────────────────────────────────────────┤
+│  Tier 2: Stable Immutable Region (SIR)                   │
+│  Blackened Stable Subgraph (BSS) — no tracing            │
+│  Immutable graphs, config maps, UI trees, schemas        │
+│  Rarely/never rescanned                                  │
+├──────────────────────────────────────────────────────────┤
+│  Tier 3: Binary Region                                   │
+│  Reference-counted large binaries                        │
+│  Shared across actors via refcount                       │
+├──────────────────────────────────────────────────────────┤
+│  Tier 4: Tensor Region                                   │
+│  GPU/NN buffers, 64-byte aligned                         │
+│  Zero-copy interop with native ML frameworks             │
+├──────────────────────────────────────────────────────────┤
+│  Tier 5: Native Resource Region                          │
+│  Capability-tracked handles (files, sockets, GPU, etc.)  │
+│  Actor-owned, automatic cleanup on termination           │
+├──────────────────────────────────────────────────────────┤
+│  Tier 6: Arena Allocators                                │
+│  Frame-scoped, bulk-free in O(1)                         │
+│  Per-message handler, per-inference-request              │
+└──────────────────────────────────────────────────────────┘
 ```
 
-### 3.2 Young Heap (Tier 1)
+### 3.2 Young Heap (Tier 1a)
 
 **Algorithm:** Copying GC (semi-space)
 **Trigger:** Heap exhaustion or actor yield point
@@ -72,7 +85,7 @@ Requirements:
 
 **Target pause:** < 500 µs per process
 
-### 3.3 Old Heap (Tier 2)
+### 3.3 Old Heap (Tier 1b)
 
 **Algorithm:** Concurrent tri-color mark + incremental sweep
 **Trigger:** Promotion from young heap
@@ -87,7 +100,7 @@ Requirements:
 
 **Target pause:** < 2 ms (incremental slices)
 
-### 3.4 Stable Immutable Region — SIR (Tier 3)
+### 3.4 Stable Immutable Region — SIR (Tier 2)
 
 **Algorithm:** Blackened Stable Subgraph (BSS) — no tracing, reference-counted roots only
 
@@ -109,22 +122,49 @@ Requirements:
 - Graph size above minimum (avoid trivial promotions)
 - Optionally: compiler annotation `@stable`
 
-### 3.5 Large Object / Native Buffer Space (Tier 4)
+### 3.5 Binary Region (Tier 3)
+
+**Algorithm:** Reference counting
+**Trigger:** Allocation of large binaries (> 64 bytes default)
+
+Requirements:
+- Shared across actors via refcount
+- `incref()` / `decref()` API
+- Automatic free when refcount reaches 0
+- No GC scanning needed
+
+### 3.6 Tensor Region (Tier 4)
 
 **Algorithm:** Reference counting + arena/region allocation
 
 Requirements:
-- Large binaries (> 64 bytes default): always allocated here, shared via refcount
-- Tensor buffers: arena-scoped, allocated per inference request
-- GPU/native handles: RAII wrappers with Rust-style drop semantics
-- Arena allocator API: `arena_new()`, `arena_alloc()`, `arena_drop()` — O(1) mass deallocation
-- Arenas owned by actor or request scope — no tracing needed
-- Actor request pattern:
-  ```
-  arena = arena_new()
-  process_message(arena)
-  arena_drop(arena)   ← entire region freed in O(1)
-  ```
+- 64-byte aligned for SIMD/GPU compatibility
+- GPU-resident flag for device memory tracking
+- `incref()` / `decref()` API
+- Zero-copy views into existing data
+- Integration with native ML frameworks (Metal, Vulkan, CUDA)
+
+### 3.7 Native Resource Region (Tier 5)
+
+**Algorithm:** Capability-based ownership tracking
+
+Requirements:
+- Actor-owned capabilities with reference tracking
+- Supervised native resources
+- Transferable ownership between actors
+- Automatic cleanup on actor termination
+- Resource kinds: GpuContext, MlModel, TensorBuffer, IoHandle, Socket, SharedMemory, UiSurface, MediaDevice
+
+### 3.8 Arena Allocators (Tier 6)
+
+**Algorithm:** Bump-pointer with chunked allocation
+
+Requirements:
+- O(1) allocation (bump pointer)
+- O(1) bulk deallocation (`reset()`)
+- Chunked growth: new chunk = 2× previous (up to max)
+- Per-actor or per-request scope
+- No individual free — entire arena reset at once
 
 ---
 
@@ -229,7 +269,7 @@ Requirements:
 **Scheduler must expose:**
 - `gc_young(process_id)`
 - `gc_old_cycle(scheduler_id)`
-- `gc_sip_admit(object_ref)` — SIR promotion
+- `gc_sir_admit(object_ref)` — SIR promotion
 - `arena_drop(arena_id)`
 
 ---
@@ -293,6 +333,11 @@ GC treats NativeBuffer as:
 | FR-12 | Safepoint-based GC — no async interruption |
 | FR-13 | Per-scheduler old-gen marker thread |
 | FR-14 | GC introspection API for profiling/tuning |
+| FR-15 | Binary region with reference counting for large binaries |
+| FR-16 | Tensor region with 64-byte alignment and GPU tracking |
+| FR-17 | Native resource region with capability-based ownership |
+| FR-18 | Arena allocator with chunked growth and O(1) reset |
+| FR-19 | Thermal/battery-aware GC scheduling integration |
 
 ### 8.2 Non-Functional Requirements
 
@@ -313,62 +358,65 @@ GC treats NativeBuffer as:
 ## 9. Implementation Plan
 
 ### Phase 0 — Foundations (Weeks 1–4)
-- [ ] Define object header format (color bits, survival counter, type descriptor pointer, flags)
-- [ ] Implement bump-pointer allocator
-- [ ] Implement per-process heap structure (young semi-space)
-- [ ] Basic copying GC (semi-space flip)
-- [ ] Process isolation model: spawn, message-pass, destroy
-- [ ] Test harness and GC correctness suite
+- [x] Define object header format (color bits, survival counter, type descriptor pointer, flags)
+- [x] Implement bump-pointer allocator
+- [x] Implement per-process heap structure (young semi-space)
+- [x] Basic copying GC (semi-space flip)
+- [x] Process isolation model: spawn, message-pass, destroy
+- [x] Test harness and GC correctness suite
 
 ### Phase 1 — Young Heap GC (Weeks 5–8)
-- [ ] Root scanning (stack + registers + mailbox)
-- [ ] Semi-space copying with forwarding pointers
-- [ ] Survival counter tracking
-- [ ] Young→Old remembered set (basic card table)
-- [ ] Promotion to old heap stub
-- [ ] Benchmarks: allocation throughput, pause time
+- [x] Root scanning (stack + registers + mailbox)
+- [x] Semi-space copying with forwarding pointers
+- [x] Survival counter tracking
+- [x] Young→Old remembered set (basic card table)
+- [x] Promotion to old heap stub
+- [x] Benchmarks: allocation throughput, pause time
 
 ### Phase 2 — Old Heap + Concurrent Marker (Weeks 9–14)
-- [ ] Old heap allocator (free-list or region-based)
-- [ ] Tri-color object state (2-bit field in header)
-- [ ] Gray worklist (per-scheduler marker thread)
-- [ ] Concurrent marking with safepoint coordination
-- [ ] Incremental sweeping (interleaved with mutator)
-- [ ] Write barrier implementation (card table dirty tracking)
+- [x] Old heap allocator (free-list or region-based)
+- [x] Tri-color object state (2-bit field in header)
+- [x] Gray worklist (per-scheduler marker thread)
+- [x] Concurrent marking with safepoint coordination
+- [x] Incremental sweeping (interleaved with mutator)
+- [x] Write barrier implementation (card table dirty tracking)
 - [ ] Benchmarks: old-gen pause, marker throughput
 
 ### Phase 3 — Stable Immutable Region (Weeks 15–22)
-- [ ] SIR memory region allocator
-- [ ] Stability detection: survival threshold, immutability check
-- [ ] SIR admission protocol (subgraph walk + immutability validation)
-- [ ] Stable-black state: GC traversal skip logic
-- [ ] SIR root table (lightweight refcount)
+- [x] SIR memory region allocator
+- [x] Stability detection: survival threshold, immutability check
+- [x] SIR admission protocol (subgraph walk + immutability validation)
+- [x] Stable-black state: GC traversal skip logic
+- [x] SIR root table (lightweight refcount)
 - [ ] SIR eviction / aging heuristic
 - [ ] Benchmarks: traversal reduction on stable workloads (maps, UI trees)
 
 ### Phase 4 — Arena & Native Buffers (Weeks 23–28)
-- [ ] Arena allocator: `new`, `alloc`, `drop` — O(1) deallocation
-- [ ] Actor-scoped and request-scoped arena lifecycle
-- [ ] NativeBuffer handle: refcount + drop_fn
-- [ ] GPU/tensor buffer integration API
+- [x] Arena allocator: `new`, `alloc`, `reset` — O(1) deallocation
+- [x] Actor-scoped and request-scoped arena lifecycle
+- [x] NativeBuffer handle: refcount + drop_fn
+- [x] GPU/tensor buffer integration API
+- [x] Native resource region with capability tracking
 - [ ] Arena drop correctness: ensure GC roots cleared on drop
 - [ ] Benchmarks: inference pipeline, binary-heavy workloads
 
 ### Phase 5 — Typed Layouts (Weeks 29–35)
-- [ ] TypeDescriptor format: pointer bitmap, immutability, native layout
-- [ ] Compiler integration: emit descriptors per type
+- [x] TypeDescriptor format: pointer bitmap, immutability, native layout
+- [x] Compiler integration: emit descriptors per type
 - [ ] GC scanning uses pointer bitmap (eliminate conservative fallbacks)
 - [ ] Compiler `@stable` / `@arena` annotations
 - [ ] SIR native layout compaction (flatten stable-black to packed layout)
 - [ ] Benchmarks: pointer-map scan vs conservative scan
 
 ### Phase 6 — Scheduler Integration & Hardening (Weeks 36–42)
-- [ ] Safepoint insertion in scheduler yield, message receive, call sites
+- [x] Safepoint insertion in scheduler yield, message receive, call sites
+- [x] QoS-aware scheduling with thermal/battery governor
+- [x] Per-QoS run queues
 - [ ] GC work stealing between scheduler marker threads
 - [ ] GC profiling API (per-process stats, SIR hit rate, arena usage)
 - [ ] Stress tests: millions of actors, large binaries, AI pipeline simulation
 - [ ] Pause time regression suite
-- [ ] Documentation: GC tuning guide
+- [x] Documentation: GC tuning guide
 
 ---
 
@@ -382,6 +430,7 @@ GC treats NativeBuffer as:
 | Concurrent marker correctness (missed objects) | High | Snapshot-at-beginning (SATB) write barrier variant |
 | Arena drop with dangling GC roots | Critical | Root clearing protocol before arena_drop() |
 | TypeDescriptor incompatibility across compiler versions | Medium | Versioned descriptor format; runtime validation |
+| Thermal throttling causing GC starvation | Medium | GC work is Realtime-priority; thermal governor exempts GC |
 
 ---
 
@@ -395,3 +444,6 @@ GC treats NativeBuffer as:
 - **Arena deallocation time** (should be O(1) / flat)
 - **Process spawn/kill overhead** (regression vs. BEAM baseline)
 - **Peak RSS** (memory overhead from GC metadata)
+- **Binary region refcount churn** (incref/decref per second)
+- **Tensor region GPU memory usage** (bytes allocated on device)
+- **Native resource leak count** (should be zero)

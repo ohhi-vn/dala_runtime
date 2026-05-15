@@ -1,22 +1,15 @@
 # Getting Started Guide
 
-This guide walks you through setting up, building, and running the Dala AOT compiler step by step.
+This guide walks you through setting up, building, and running the Dala
+Compiler Runtime step by step.
 
 ## Prerequisites
 
 ### Required Tools
 
-- **Rust** (1.95 or later) — Install via [rustup](https://rustup.rs/):
+- **Rust** (1.85 or later) — Install via [rustup](https://rustup.rs/):
   ```bash
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  ```
-- **LLVM 14+** — Required by Cranelift for native code generation:
-  ```bash
-  # macOS
-  brew install llvm@14
-
-  # Ubuntu/Debian
-  sudo apt-get install llvm-14-dev
   ```
 - **CMake** (3.16+) — Required for building Cranelift:
   ```bash
@@ -37,38 +30,18 @@ This guide walks you through setting up, building, and running the Dala AOT comp
 
 ### Optional Tools
 
-- **Elixir/OTP** (1.7+) — For generating .beam files to compile
+- **Elixir/OTP** (1.15+) — For generating .beam files to compile
 - **hexdump** or **xxd** — For inspecting binary output
 - **objdump** — For disassembling generated object files
 
 ## Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/manhvu/BEAM_AOT_Compiler
-cd BEAM_AOT_Compiler
+git clone https://github.com/manhvu/dala_compiler_runtime
+cd dala_compiler_runtime
 ```
 
-## Step 2: Set Up Environment Variables
-
-### Finding LLVM
-
-Dala uses Cranelift, which requires LLVM. Set the following environment variables if LLVM is not in your default path:
-
-```bash
-# macOS (Homebrew)
-export LLVM_SYS_140_PREFIX=$(brew --prefix llvm@14)
-
-# Ubuntu/Debian
-export LLVM_SYS_140_PREFIX=/usr/lib/llvm-14
-```
-
-### Verify LLVM is Found
-
-```bash
-cargo check -p cranelift-native 2>&1 | head -20
-```
-
-## Step 3: Build the Project
+## Step 2: Build the Project
 
 ### Full Build (All Crates)
 
@@ -76,7 +49,8 @@ cargo check -p cranelift-native 2>&1 | head -20
 cargo build --release
 ```
 
-This builds all six crates: `dala_runtime`, `dala_ir`, `dala_beam_loader`, `dala_codegen`, `dala_dispatch`, and `dala_aot`.
+This builds all six crates: `dala_runtime`, `dala_ir`, `dala_beam_loader`,
+`dala_codegen`, `dala_dispatch`, and `dala_aot`.
 
 ### Build with JIT Support (Default)
 
@@ -96,6 +70,22 @@ cargo build --release --features aot
 cargo build
 RUST_LOG=debug cargo build
 cargo test
+```
+
+## Step 3: Run Tests
+
+```bash
+# All tests
+cargo test
+
+# Specific crate
+cargo test -p dala_ir
+cargo test -p dala_runtime
+
+# Specific test
+cargo test -p dala_runtime -- mailbox::tests
+cargo test -p dala_runtime -- scheduler::tests
+cargo test -p dala_ir -- type_system::tests
 ```
 
 ## Step 4: Install the CLI Tool
@@ -181,16 +171,17 @@ gcc main.o hello.o -o hello_program -ldala_runtime
 dala_aot compile --input my_module.beam --output my_module.o --target aarch64 --mode aot
 ```
 
-Add `my_module.o` to your Xcode project and link against `dala_runtime` as a static library.
+Add `my_module.o` to your Xcode project and link against `dala_runtime` as a
+static library.
 
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
-| `LLVM not found` | Set `LLVM_SYS_140_PREFIX` environment variable |
 | `cranelift` build fails | Ensure CMake and Ninja are installed |
 | `Unsupported opcode` | The BEAM module uses an instruction not yet implemented |
 | `Link error: undefined symbol` | Ensure dala_runtime is linked and compiled |
+| `SIGSEGV in tests` | Some term tests have a known issue with num-bigint; use `cargo test --skip term::tests` |
 
 ### Debug Output
 
@@ -198,3 +189,15 @@ Add `my_module.o` to your Xcode project and link against `dala_runtime` as a sta
 RUST_LOG=trace cargo run --bin dala_aot -- compile --input hello.beam ...
 cargo clippy --all-targets -- -D warnings
 ```
+
+## Next Steps
+
+- Read the [Architecture Guide](architecture.md) for a deep dive into the system
+- Read the [Reference](reference.md) for complete API documentation
+- Read the subproject guides:
+  - [`dala_ir`](dala_ir.md) — Intermediate representation
+  - [`dala_runtime`](dala_runtime.md) — Core runtime
+  - [`dala_codegen`](dala_codegen.md) — Code generation
+  - [`dala_beam_loader`](dala_beam_loader.md) — BEAM file parser
+  - [`dala_dispatch`](dala_dispatch.md) — Module dispatch & hot code loading
+  - [`dala_aot`](dala_aot.md) — CLI tool

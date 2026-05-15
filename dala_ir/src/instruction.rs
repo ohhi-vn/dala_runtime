@@ -382,9 +382,142 @@ pub enum IRInstKind {
     /// GC safepoint - all live values must be on the stack
     GcSafe,
 
+    // ===== Typed Actor Operations =====
+    /// Spawn a typed actor with a known message protocol
+    SpawnActor {
+        /// Module containing the actor implementation
+        module: IRValueId,
+        /// Initial arguments
+        args: Vec<IRValueId>,
+        /// QoS class for scheduling
+        qos: u32,
+    },
+    /// Send a typed message to an actor
+    SendTyped {
+        /// Target actor PID
+        target: IRValueId,
+        /// Message payload
+        msg: IRValueId,
+        /// Expected type tag (for fast-path matching)
+        type_tag: u32,
+        /// Message priority
+        priority: u32,
+    },
+    /// Receive a typed message from the mailbox
+    RecvTyped {
+        /// Expected type tag
+        type_tag: u32,
+        /// Timeout in milliseconds (0 = infinite)
+        timeout: u32,
+    },
+
+    // ===== Stable Immutable Region Operations =====
+    /// Allocate an object in the Stable Immutable Region
+    AllocStable {
+        /// Type descriptor index
+        type_desc: u32,
+        /// Number of payload words
+        words: u32,
+    },
+    /// Promote an existing heap object to the SIR
+    PromoteStable {
+        /// The object to promote
+        object: IRValueId,
+    },
+
+    // ===== Tensor Operations =====
+    /// Create a tensor from a descriptor
+    TensorNew {
+        /// Tensor descriptor index
+        desc_idx: u32,
+        /// Whether to allocate on GPU
+        gpu: bool,
+    },
+    /// Tensor element-wise operation
+    TensorOp {
+        /// The operation kind
+        op: TensorOpKind,
+        /// Input tensors
+        inputs: Vec<IRValueId>,
+    },
+
+    // ===== Capability Operations =====
+    /// Create a new capability (native resource handle)
+    CapNew {
+        /// Resource kind
+        resource_kind: u32,
+        /// Whether this handle is owned
+        owned: bool,
+    },
+    /// Release a capability
+    CapRelease {
+        /// The capability to release
+        cap: IRValueId,
+    },
+    /// Transfer capability ownership
+    CapTransfer {
+        /// The capability
+        cap: IRValueId,
+        /// New owner actor PID
+        new_owner: IRValueId,
+    },
+
+    // ===== AI Runtime Operations =====
+    /// Submit an inference request
+    InferenceSubmit {
+        /// Model ID
+        model_id: IRValueId,
+        /// Input tensor
+        input: IRValueId,
+        /// Priority
+        priority: u32,
+    },
+    /// Await an inference result
+    InferenceAwait {
+        /// Request handle
+        request: IRValueId,
+    },
+
+    // ===== Arena Operations =====
+    /// Allocate from an arena
+    ArenaAlloc {
+        /// Arena handle
+        arena: IRValueId,
+        /// Number of bytes
+        size: u32,
+        /// Alignment (power of 2)
+        align: u32,
+    },
+    /// Reset an arena (bulk free)
+    ArenaReset {
+        /// Arena handle
+        arena: IRValueId,
+    },
+
     // ===== Optimization =====
     /// No-op instruction (used as placeholder during optimization)
     Nop,
+}
+
+/// Tensor operation kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TensorOpKind {
+    /// Element-wise add
+    Add,
+    /// Element-wise multiply
+    Mul,
+    /// Matrix multiply
+    MatMul,
+    /// ReLU activation
+    Relu,
+    /// Softmax
+    Softmax,
+    /// Concatenation
+    Concat,
+    /// Reshape
+    Reshape,
+    /// Transpose
+    Transpose,
 }
 
 impl IRInst {

@@ -485,6 +485,7 @@ dependencies = [
  "bitflags 2.11.1",
  "cfg-if",
  "crossbeam",
+ "dala_ir",
  "dashmap",
  "indexmap",
  "log",

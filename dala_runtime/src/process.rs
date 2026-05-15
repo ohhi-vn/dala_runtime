@@ -12,6 +12,8 @@ use smallvec::SmallVec;
 
 use crate::code::CodePtr;
 use crate::mailbox::Mailbox;
+use crate::memory::{Arena, MemoryConfig, MemoryRegion, RegionId, StableImmutableRegion};
+use crate::scheduler::QosClass;
 use crate::term::{RegisterFile, Term};
 
 #[doc = "Flags on a process"]
@@ -102,6 +104,15 @@ pub struct Process {
 
     /// Priority (0=low, 1=normal, 2=high, 3=max)
     pub priority: u8,
+
+    /// QoS class for scheduling
+    pub qos: QosClass,
+
+    /// Arena for frame-scoped allocations
+    pub arena: Arena,
+
+    /// Stable Immutable Region for long-lived data
+    pub stable_region: StableImmutableRegion,
 
     /// Status (running, runnable, waiting, suspended, exiting)
     pub status: ProcessStatus,
@@ -216,6 +227,9 @@ impl ProcessBuilder {
             group_leader: self.group_leader,
             error_handler: Term::atom(0), // Default error handler
             priority: self.priority,
+            qos: QosClass::Utility,
+            arena: Arena::default(),
+            stable_region: StableImmutableRegion::new(RegionId(0), 1024 * 1024),
             status: ProcessStatus::Runnable,
             exit_reason: None,
         })
@@ -320,8 +334,13 @@ impl Process {
 
     /// Send a message to this process's mailbox.
     pub fn send(&self, msg: Term) {
+        let envelope = crate::mailbox::MessageEnvelope::new(
+            msg,
+            dala_ir::type_system::MessagePriority::Normal,
+            0, // unknown sender
+        );
         let mut mbox = self.mailbox.lock();
-        mbox.enqueue(msg);
+        mbox.enqueue(envelope);
     }
 
     /// Grow the heap (double its size).

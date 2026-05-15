@@ -5,6 +5,7 @@ edition = "2024"
 license = "MPL-2.0"
 
 [dependencies]
+dala_ir = { path = "../dala_ir" }
 log = "0.4"
 parking_lot = "0.12"
 crossbeam = "0.8"
