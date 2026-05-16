@@ -151,6 +151,16 @@ pub enum IRInstKind {
     IsTrue,
     /// Test if value is false
     IsFalse,
+    /// Test if value is a stable (immutable) tuple
+    IsStableTuple,
+    /// Test if value is a message pattern type
+    IsMessage,
+    /// Test if value is an actor reference
+    IsActor,
+    /// Test if value is a tensor
+    IsTensor,
+    /// Test if value is a capability handle
+    IsCapability,
 
     // ===== Memory / Heap Operations =====
     /// Allocate heap space: result = pointer to allocated space
@@ -492,6 +502,18 @@ pub enum IRInstKind {
     ArenaReset {
         /// Arena handle
         arena: IRValueId,
+    },
+
+    // ===== Type Narrowing =====
+    /// Narrow the type of a value after a type test.
+    /// This is the key instruction for pattern-match type refinement:
+    /// if `IsTuple(x)` succeeds, `Narrow { value: x, new_type: Tuple{arity: 2} }`
+    /// tells the optimizer that `x` now has the refined type.
+    Narrow {
+        /// The value to narrow
+        value: IRValueId,
+        /// The refined type after the test
+        new_type: Box<crate::type_system::IRType>,
     },
 
     // ===== Optimization =====

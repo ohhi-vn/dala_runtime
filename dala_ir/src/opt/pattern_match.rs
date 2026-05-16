@@ -151,6 +151,11 @@ fn try_convert_type_chain(insts: &[IRInst]) -> Option<TypeChainSwitch> {
             | IRInstKind::IsFun
             | IRInstKind::IsSmallInt
             | IRInstKind::IsNil
+            | IRInstKind::IsStableTuple
+            | IRInstKind::IsMessage
+            | IRInstKind::IsActor
+            | IRInstKind::IsTensor
+            | IRInstKind::IsCapability
     );
     if !is_type_test {
         return None;
@@ -174,6 +179,11 @@ fn try_convert_type_chain(insts: &[IRInst]) -> Option<TypeChainSwitch> {
             IRInstKind::IsFun => 7,
             IRInstKind::IsSmallInt => 8,
             IRInstKind::IsNil => 9,
+            IRInstKind::IsStableTuple => 10,
+            IRInstKind::IsMessage => 11,
+            IRInstKind::IsActor => 12,
+            IRInstKind::IsTensor => 13,
+            IRInstKind::IsCapability => 14,
             _ => break,
         };
         targets.push((tag, Label(chain_len as u32)));

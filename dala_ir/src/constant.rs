@@ -112,7 +112,8 @@ impl From<Constant> for ConstantValue {
             Constant::Nil => ConstantValue::Nil,
             Constant::True => ConstantValue::True,
             Constant::False => ConstantValue::False,
-            _ => ConstantValue::Nil,
+            Constant::Float(f) => ConstantValue::Float(f.to_bits()),
+            Constant::Tuple(_) | Constant::List(_) | Constant::Binary(_) => ConstantValue::Nil,
         }
     }
 }
@@ -131,6 +132,7 @@ impl From<ConstantValue> for IRType {
             ConstantValue::Nil => IRType::new(TypeKind::Nil),
             ConstantValue::True => IRType::new(TypeKind::Boolean),
             ConstantValue::False => IRType::new(TypeKind::Boolean),
+            ConstantValue::Float(_) => IRType::new(TypeKind::Float),
         }
     }
 }

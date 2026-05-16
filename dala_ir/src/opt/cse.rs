@@ -61,6 +61,11 @@ enum TypeTest {
     IsNil,
     IsTrue,
     IsFalse,
+    IsStableTuple,
+    IsMessage,
+    IsActor,
+    IsTensor,
+    IsCapability,
 }
 
 /// Eliminate common subexpressions from a function.
@@ -213,6 +218,26 @@ fn expr_key(kind: &IRInstKind, operands: &[IRValueId]) -> Option<ExprKey> {
         IRInstKind::IsFalse => {
             let [a] = operands else { return None };
             Some(ExprKey::TypeTest(TypeTest::IsFalse, *a))
+        }
+        IRInstKind::IsStableTuple => {
+            let [a] = operands else { return None };
+            Some(ExprKey::TypeTest(TypeTest::IsStableTuple, *a))
+        }
+        IRInstKind::IsMessage => {
+            let [a] = operands else { return None };
+            Some(ExprKey::TypeTest(TypeTest::IsMessage, *a))
+        }
+        IRInstKind::IsActor => {
+            let [a] = operands else { return None };
+            Some(ExprKey::TypeTest(TypeTest::IsActor, *a))
+        }
+        IRInstKind::IsTensor => {
+            let [a] = operands else { return None };
+            Some(ExprKey::TypeTest(TypeTest::IsTensor, *a))
+        }
+        IRInstKind::IsCapability => {
+            let [a] = operands else { return None };
+            Some(ExprKey::TypeTest(TypeTest::IsCapability, *a))
         }
         IRInstKind::Neg => {
             let [a] = operands else { return None };

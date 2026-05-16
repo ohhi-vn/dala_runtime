@@ -128,9 +128,14 @@ pub enum TypeKind {
         shareable: bool,
     },
 
-    // ── Union / intersection ────────────────────────────────────────────
-    /// Union of two types
+    // ── Union / intersection / difference ──────────────────────────────
+    /// Union of two types (A ∪ B)
     Union(Box<IRType>, Box<IRType>),
+    /// Intersection of two types (A ∩ B)
+    Intersection(Box<IRType>, Box<IRType>),
+    /// Difference / subtraction (A \\ B) — values in A but not in B.
+    /// Used by pattern-match narrowing to remove matched types.
+    Difference(Box<IRType>, Box<IRType>),
     /// A specific constant value
     Constant(ConstantValue),
 }
@@ -231,6 +236,8 @@ pub enum ConstantValue {
     True,
     /// Boolean false
     False,
+    /// A specific float value
+    Float(u64), // bit pattern for f64
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -263,25 +270,51 @@ impl IRType {
     // ── Lattice operations ─────────────────────────────────────────────
 
     /// Compute the least upper bound (join) of two types.
+    ///
+    /// The join is the smallest type that is a supertype of both `self` and `other`.
+    /// This is the fundamental widening operation used in control-flow merge points.
     pub fn join(&self, other: &Self) -> Self {
         if self == other {
             return self.clone();
         }
 
         match (&self.kind, &other.kind) {
+            // Lattice extremes
             (TypeKind::Bottom, t) | (t, TypeKind::Bottom) => IRType::new(t.clone()),
             (TypeKind::Any, _) | (_, TypeKind::Any) => IRType::new(TypeKind::Any),
 
-            // Same category unions
+            // Same category subtyping
             (TypeKind::SmallInt, TypeKind::NonNegInt)
             | (TypeKind::NonNegInt, TypeKind::SmallInt) => IRType::new(TypeKind::SmallInt),
+            (TypeKind::SmallInt, TypeKind::Int64) | (TypeKind::Int64, TypeKind::SmallInt) => {
+                IRType::new(TypeKind::Int64)
+            }
+            (TypeKind::NonNegInt, TypeKind::Int64) | (TypeKind::Int64, TypeKind::NonNegInt) => {
+                IRType::new(TypeKind::Int64)
+            }
             (TypeKind::Nil, TypeKind::Cons) | (TypeKind::Cons, TypeKind::Nil) => {
                 IRType::new(TypeKind::List)
             }
 
-            // Constant with general type
-            (TypeKind::Constant(_), general) | (general, TypeKind::Constant(_)) => {
-                IRType::new(general.clone())
+            // Constant with general type (or constant with constant):
+            // If both are constants and equal, keep the constant.
+            // Otherwise widen to the general type (or Any if incompatible).
+            (TypeKind::Constant(a), TypeKind::Constant(b)) => {
+                if a == b {
+                    self.clone()
+                } else {
+                    let ga: IRType = a.clone().into();
+                    let gb: IRType = b.clone().into();
+                    ga.join(&gb)
+                }
+            }
+            (TypeKind::Constant(cv), general) | (general, TypeKind::Constant(cv)) => {
+                let general_ty = IRType::new(general.clone());
+                if general_ty.contains_constant(cv) {
+                    general_ty
+                } else {
+                    IRType::new(TypeKind::Any)
+                }
             }
 
             // StableTuple joins: if shapes match, join element types;
@@ -297,7 +330,8 @@ impl IRType {
                 },
             ) => {
                 if a.len() == b.len() {
-                    let joined: Vec<IRType> = a.iter().zip(b.iter()).map(|(x, y)| x.join(y)).collect();
+                    let joined: Vec<IRType> =
+                        a.iter().zip(b.iter()).map(|(x, y)| x.join(y)).collect();
                     IRType::new(TypeKind::StableTuple {
                         element_types: joined,
                         immutable: *ia && *ib,
@@ -306,6 +340,30 @@ impl IRType {
                     IRType::new(TypeKind::Tuple {
                         arity: a.len().max(b.len()) as u32,
                     })
+                }
+            }
+
+            // StableTuple with Tuple: fall back to Tuple
+            (TypeKind::StableTuple { element_types, .. }, TypeKind::Tuple { arity })
+            | (TypeKind::Tuple { arity }, TypeKind::StableTuple { element_types, .. }) => {
+                IRType::new(TypeKind::Tuple {
+                    arity: (*arity).max(element_types.len() as u32),
+                })
+            }
+
+            // Tuple with Tuple
+            (TypeKind::Tuple { arity: a }, TypeKind::Tuple { arity: b }) => {
+                IRType::new(TypeKind::Tuple {
+                    arity: (*a).max(*b),
+                })
+            }
+
+            // Fun joins: same arity → Fun, different → Any
+            (TypeKind::Fun { arity: a }, TypeKind::Fun { arity: b }) => {
+                if a == b {
+                    self.clone()
+                } else {
+                    IRType::new(TypeKind::Any)
                 }
             }
 
@@ -324,7 +382,89 @@ impl IRType {
                 priority: *pr1.max(pr2),
             }),
 
-            // Union types
+            // Actor joins: union of accepted messages, most permissive lifecycle
+            (
+                TypeKind::Actor {
+                    accepts: a1,
+                    lifecycle: l1,
+                },
+                TypeKind::Actor {
+                    accepts: a2,
+                    lifecycle: l2,
+                },
+            ) => {
+                let mut accepts = a1.clone();
+                for a in a2 {
+                    if !accepts.contains(a) {
+                        accepts.push(a.clone());
+                    }
+                }
+                let lifecycle = match (l1, l2) {
+                    (ActorLifecycle::Supervisor, _) | (_, ActorLifecycle::Supervisor) => {
+                        ActorLifecycle::Supervisor
+                    }
+                    (ActorLifecycle::Permanent, _) | (_, ActorLifecycle::Permanent) => {
+                        ActorLifecycle::Permanent
+                    }
+                    (ActorLifecycle::Transient, _) | (_, ActorLifecycle::Transient) => {
+                        ActorLifecycle::Transient
+                    }
+                    _ => ActorLifecycle::Temporary,
+                };
+                IRType::new(TypeKind::Actor { accepts, lifecycle })
+            }
+
+            // Tensor joins: same dtype → join shapes, different → Any
+            (
+                TypeKind::Tensor {
+                    dtype: d1,
+                    shape: s1,
+                },
+                TypeKind::Tensor {
+                    dtype: d2,
+                    shape: s2,
+                },
+            ) => {
+                if d1 == d2 {
+                    let shape: Vec<Option<u64>> = s1
+                        .iter()
+                        .zip(s2.iter())
+                        .map(|(a, b)| match (a, b) {
+                            (Some(a), Some(b)) => Some((*a).max(*b)),
+                            _ => None,
+                        })
+                        .collect();
+                    IRType::new(TypeKind::Tensor { dtype: *d1, shape })
+                } else {
+                    IRType::new(TypeKind::Any)
+                }
+            }
+
+            // Capability joins: same resource → join flags, different → Any
+            (
+                TypeKind::Capability {
+                    resource: r1,
+                    owned: o1,
+                    shareable: s1,
+                },
+                TypeKind::Capability {
+                    resource: r2,
+                    owned: o2,
+                    shareable: s2,
+                },
+            ) => {
+                if r1 == r2 {
+                    IRType::new(TypeKind::Capability {
+                        resource: *r1,
+                        owned: *o1 || *o2,
+                        shareable: *s1 || *s2,
+                    })
+                } else {
+                    IRType::new(TypeKind::Any)
+                }
+            }
+
+            // Union types: flatten and simplify
             (TypeKind::Union(a, b), c) => {
                 let ab = a.join(b);
                 ab.join(&IRType::new(c.clone()))
@@ -334,21 +474,58 @@ impl IRType {
                 IRType::new(c.clone()).join(&ab)
             }
 
+            // Intersection types: distribute over join
+            (TypeKind::Intersection(a, b), _) => {
+                let ja = a.join(other);
+                let jb = b.join(other);
+                ja.meet(&jb)
+            }
+            (_, TypeKind::Intersection(a, b)) => {
+                let ja = self.join(a);
+                let jb = self.join(b);
+                ja.meet(&jb)
+            }
+
+            // Difference types: (A \\ B).join(C) ≈ (A.join(C)) \\ B  (conservative)
+            (TypeKind::Difference(a, b), _) => {
+                let joined = a.join(other);
+                IRType::new(TypeKind::Difference(Box::new(joined), b.clone()))
+            }
+            (_, TypeKind::Difference(a, b)) => {
+                let joined = self.join(a);
+                IRType::new(TypeKind::Difference(Box::new(joined), b.clone()))
+            }
+
             // Default: fall back to Any
             _ => IRType::new(TypeKind::Any),
         }
     }
 
     /// Compute the greatest lower bound (meet) of two types.
+    ///
+    /// The meet is the largest type that is a subtype of both `self` and `other`.
+    /// This is the fundamental narrowing operation used in pattern matching
+    /// and control-flow branching.
     pub fn meet(&self, other: &Self) -> Self {
         if self == other {
             return self.clone();
         }
 
         match (&self.kind, &other.kind) {
+            // Lattice extremes
             (TypeKind::Bottom, _) | (_, TypeKind::Bottom) => IRType::new(TypeKind::Bottom),
             (TypeKind::Any, t) | (t, TypeKind::Any) => IRType::new(t.clone()),
 
+            // Constant with constant: same value → keep, different → Bottom
+            (TypeKind::Constant(a), TypeKind::Constant(b)) => {
+                if a == b {
+                    self.clone()
+                } else {
+                    IRType::new(TypeKind::Bottom)
+                }
+            }
+
+            // Constant with general type
             (TypeKind::Constant(c), general) | (general, TypeKind::Constant(c)) => {
                 if IRType::new(general.clone()).contains_constant(c) {
                     IRType::new(TypeKind::Constant(c.clone()))
@@ -357,15 +534,207 @@ impl IRType {
                 }
             }
 
+            // List subtyping
             (TypeKind::Nil, TypeKind::List) | (TypeKind::List, TypeKind::Nil) => {
                 IRType::new(TypeKind::Nil)
             }
             (TypeKind::Cons, TypeKind::List) | (TypeKind::List, TypeKind::Cons) => {
                 IRType::new(TypeKind::Cons)
             }
+
+            // Integer subtyping
             (TypeKind::NonNegInt, TypeKind::SmallInt)
             | (TypeKind::SmallInt, TypeKind::NonNegInt) => IRType::new(TypeKind::NonNegInt),
+            (TypeKind::SmallInt, TypeKind::Int64) | (TypeKind::Int64, TypeKind::SmallInt) => {
+                IRType::new(TypeKind::SmallInt)
+            }
+            (TypeKind::NonNegInt, TypeKind::Int64) | (TypeKind::Int64, TypeKind::NonNegInt) => {
+                IRType::new(TypeKind::NonNegInt)
+            }
 
+            // StableTuple meet: if shapes match, meet element types;
+            // otherwise Bottom.
+            (
+                TypeKind::StableTuple {
+                    element_types: a,
+                    immutable: ia,
+                },
+                TypeKind::StableTuple {
+                    element_types: b,
+                    immutable: ib,
+                },
+            ) => {
+                if a.len() == b.len() {
+                    let met: Vec<IRType> = a.iter().zip(b.iter()).map(|(x, y)| x.meet(y)).collect();
+                    IRType::new(TypeKind::StableTuple {
+                        element_types: met,
+                        immutable: *ia || *ib,
+                    })
+                } else {
+                    IRType::new(TypeKind::Bottom)
+                }
+            }
+
+            // StableTuple meet with Tuple: fall back to Tuple if arity matches
+            (TypeKind::StableTuple { element_types, .. }, TypeKind::Tuple { arity })
+            | (TypeKind::Tuple { arity }, TypeKind::StableTuple { element_types, .. }) => {
+                if element_types.len() as u32 == *arity {
+                    IRType::new(TypeKind::Tuple { arity: *arity })
+                } else {
+                    IRType::new(TypeKind::Bottom)
+                }
+            }
+
+            // Tuple meet
+            (TypeKind::Tuple { arity: a }, TypeKind::Tuple { arity: b }) => {
+                if a == b {
+                    self.clone()
+                } else {
+                    IRType::new(TypeKind::Bottom)
+                }
+            }
+
+            // Fun meet
+            (TypeKind::Fun { arity: a }, TypeKind::Fun { arity: b }) => {
+                if a == b {
+                    self.clone()
+                } else {
+                    IRType::new(TypeKind::Bottom)
+                }
+            }
+
+            // Message meet: meet payloads, take lower priority
+            (
+                TypeKind::Message {
+                    payload: p1,
+                    priority: pr1,
+                },
+                TypeKind::Message {
+                    payload: p2,
+                    priority: pr2,
+                },
+            ) => IRType::new(TypeKind::Message {
+                payload: Box::new(p1.meet(p2)),
+                priority: *pr1.min(pr2),
+            }),
+
+            // Actor meet: intersection of accepted messages, most restrictive lifecycle
+            (
+                TypeKind::Actor {
+                    accepts: a1,
+                    lifecycle: l1,
+                },
+                TypeKind::Actor {
+                    accepts: a2,
+                    lifecycle: l2,
+                },
+            ) => {
+                let accepts: Vec<IRType> = a1.iter().filter(|a| a2.contains(a)).cloned().collect();
+                let lifecycle = match (l1, l2) {
+                    (ActorLifecycle::Temporary, _) | (_, ActorLifecycle::Temporary) => {
+                        ActorLifecycle::Temporary
+                    }
+                    (ActorLifecycle::Transient, _) | (_, ActorLifecycle::Transient) => {
+                        ActorLifecycle::Transient
+                    }
+                    (ActorLifecycle::Permanent, _) | (_, ActorLifecycle::Permanent) => {
+                        ActorLifecycle::Permanent
+                    }
+                    _ => ActorLifecycle::Supervisor,
+                };
+                IRType::new(TypeKind::Actor { accepts, lifecycle })
+            }
+
+            // Tensor meet: same dtype → meet shapes, different → Bottom
+            (
+                TypeKind::Tensor {
+                    dtype: d1,
+                    shape: s1,
+                },
+                TypeKind::Tensor {
+                    dtype: d2,
+                    shape: s2,
+                },
+            ) => {
+                if d1 == d2 {
+                    if s1.len() == s2.len() {
+                        let shape: Vec<Option<u64>> = s1
+                            .iter()
+                            .zip(s2.iter())
+                            .map(|(a, b)| match (a, b) {
+                                (Some(a), Some(b)) => Some((*a).min(*b)),
+                                (Some(_), None) | (None, Some(_)) => None,
+                                (None, None) => None,
+                            })
+                            .collect();
+                        IRType::new(TypeKind::Tensor { dtype: *d1, shape })
+                    } else {
+                        IRType::new(TypeKind::Bottom)
+                    }
+                } else {
+                    IRType::new(TypeKind::Bottom)
+                }
+            }
+
+            // Capability meet: same resource → meet flags, different → Bottom
+            (
+                TypeKind::Capability {
+                    resource: r1,
+                    owned: o1,
+                    shareable: s1,
+                },
+                TypeKind::Capability {
+                    resource: r2,
+                    owned: o2,
+                    shareable: s2,
+                },
+            ) => {
+                if r1 == r2 {
+                    IRType::new(TypeKind::Capability {
+                        resource: *r1,
+                        owned: *o1 && *o2,
+                        shareable: *s1 && *s2,
+                    })
+                } else {
+                    IRType::new(TypeKind::Bottom)
+                }
+            }
+
+            // Union meet: distribute (A ∪ B) ∩ C = (A ∩ C) ∪ (B ∩ C)
+            (TypeKind::Union(a, b), _) => {
+                let ma = a.meet(other);
+                let mb = b.meet(other);
+                ma.join(&mb)
+            }
+            (_, TypeKind::Union(a, b)) => {
+                let ma = self.meet(a);
+                let mb = self.meet(b);
+                ma.join(&mb)
+            }
+
+            // Intersection meet: flatten
+            (TypeKind::Intersection(a, b), _) => {
+                let ma = a.meet(other);
+                let mb = b.meet(other);
+                ma.meet(&mb)
+            }
+            (_, TypeKind::Intersection(a, b)) => {
+                let ma = self.meet(a);
+                let mb = self.meet(b);
+                ma.meet(&mb)
+            }
+
+            // Difference meet: (A \\ B) ∩ C = (A ∩ C) \\ B
+            (TypeKind::Difference(a, b), _) => {
+                let met = a.meet(other);
+                IRType::new(TypeKind::Difference(Box::new(met), b.clone()))
+            }
+            (_, TypeKind::Difference(a, b)) => {
+                let met = self.meet(a);
+                IRType::new(TypeKind::Difference(Box::new(met), b.clone()))
+            }
+
+            // Generic fallback: check subtyping
             _ => {
                 if self.contains(other) {
                     other.clone()
@@ -382,10 +751,12 @@ impl IRType {
         match (&self.kind, c) {
             (TypeKind::SmallInt, ConstantValue::Int(_)) => true,
             (TypeKind::NonNegInt, ConstantValue::Int(i)) => *i >= 0,
+            (TypeKind::Int64, ConstantValue::Int(_)) => true,
             (TypeKind::Atom, ConstantValue::Atom(_)) => true,
             (TypeKind::Boolean, ConstantValue::True)
             | (TypeKind::Boolean, ConstantValue::False) => true,
             (TypeKind::Nil, ConstantValue::Nil) => true,
+            (TypeKind::Float, ConstantValue::Float(_)) => true,
             (TypeKind::Any, _) => true,
             (TypeKind::Union(a, b), _) => {
                 a.as_ref().contains_constant(c) || b.as_ref().contains_constant(c)
@@ -394,17 +765,127 @@ impl IRType {
         }
     }
 
-    /// Check if this type is a subtype of another.
+    /// Check if `self` is a supertype of (or equal to) `other`.
+    ///
+    /// This is the semantic subtyping relation: `self ⊇ other` means
+    /// every value described by `other` is also described by `self`.
     pub fn contains(&self, other: &Self) -> bool {
         if self == other {
             return true;
         }
         match (&self.kind, &other.kind) {
+            // Lattice extremes
             (TypeKind::Any, _) => true,
             (_, TypeKind::Bottom) => true,
+
+            // List subtyping: list ⊇ nil, list ⊇ cons
             (TypeKind::List, TypeKind::Nil) | (TypeKind::List, TypeKind::Cons) => true,
+
+            // Integer subtyping: smallint ⊇ nonnegint, int64 ⊇ smallint
             (TypeKind::SmallInt, TypeKind::NonNegInt) => true,
-            (TypeKind::Union(a, b), _) => a.as_ref().contains(other) || b.as_ref().contains(other),
+            (TypeKind::Int64, TypeKind::SmallInt) | (TypeKind::Int64, TypeKind::NonNegInt) => true,
+
+            // Constant → general type
+            (TypeKind::SmallInt, TypeKind::Constant(ConstantValue::Int(_))) => true,
+            (TypeKind::NonNegInt, TypeKind::Constant(ConstantValue::Int(i))) => *i >= 0,
+            (TypeKind::Int64, TypeKind::Constant(ConstantValue::Int(_))) => true,
+            (TypeKind::Atom, TypeKind::Constant(ConstantValue::Atom(_))) => true,
+            (TypeKind::Boolean, TypeKind::Constant(ConstantValue::True)) => true,
+            (TypeKind::Boolean, TypeKind::Constant(ConstantValue::False)) => true,
+            (TypeKind::Nil, TypeKind::Constant(ConstantValue::Nil)) => true,
+            (TypeKind::Float, TypeKind::Constant(ConstantValue::Float(_))) => true,
+
+            // StableTuple ⊇ Tuple (stable is a refinement)
+            (TypeKind::StableTuple { element_types, .. }, TypeKind::Tuple { arity }) => {
+                element_types.len() as u32 == *arity
+            }
+
+            // StableTuple element-wise subtyping
+            (
+                TypeKind::StableTuple {
+                    element_types: a, ..
+                },
+                TypeKind::StableTuple {
+                    element_types: b, ..
+                },
+            ) => a.len() == b.len() && a.iter().zip(b.iter()).all(|(ea, eb)| ea.contains(eb)),
+
+            // Tuple subtyping (arity must match)
+            (TypeKind::Tuple { arity: a }, TypeKind::Tuple { arity: b }) => a == b,
+
+            // Fun subtyping (arity must match)
+            (TypeKind::Fun { arity: a }, TypeKind::Fun { arity: b }) => a == b,
+
+            // Message subtyping: covariant in payload, contravariant in priority
+            (
+                TypeKind::Message {
+                    payload: p1,
+                    priority: pr1,
+                },
+                TypeKind::Message {
+                    payload: p2,
+                    priority: pr2,
+                },
+            ) => p1.contains(p2) && *pr1 >= *pr2,
+
+            // Actor subtyping: contravariant in accepts, lifecycle must match
+            (
+                TypeKind::Actor {
+                    accepts: a1,
+                    lifecycle: l1,
+                },
+                TypeKind::Actor {
+                    accepts: a2,
+                    lifecycle: l2,
+                },
+            ) => l1 == l2 && a2.iter().all(|msg| a1.contains(msg)),
+
+            // Tensor subtyping: same dtype, dimension-wise subtyping
+            (
+                TypeKind::Tensor {
+                    dtype: d1,
+                    shape: s1,
+                },
+                TypeKind::Tensor {
+                    dtype: d2,
+                    shape: s2,
+                },
+            ) => {
+                d1 == d2
+                    && s1.len() == s2.len()
+                    && s1.iter().zip(s2.iter()).all(|(a, b)| match (a, b) {
+                        (Some(a), Some(b)) => a == b,
+                        (None, _) => true, // dynamic dimension accepts any
+                        (Some(_), None) => false,
+                    })
+            }
+
+            // Capability subtyping: same resource, owned ⇒ owned, shareable ⇒ shareable
+            (
+                TypeKind::Capability {
+                    resource: r1,
+                    owned: o1,
+                    shareable: s1,
+                },
+                TypeKind::Capability {
+                    resource: r2,
+                    owned: o2,
+                    shareable: s2,
+                },
+            ) => r1 == r2 && (!*o2 || *o1) && (!*s2 || *s1),
+
+            // Union subtyping: A ∪ B ⊇ C iff A ⊇ C or B ⊇ C
+            (TypeKind::Union(a, b), _) => a.contains(other) || b.contains(other),
+
+            // Intersection subtyping: A ∩ B ⊇ C iff A ⊇ C and B ⊇ C
+            (TypeKind::Intersection(a, b), _) => a.contains(other) && b.contains(other),
+
+            // Difference subtyping: A \\ B ⊇ C iff A ⊇ C and C ∩ B = ∅
+            (TypeKind::Difference(a, b), c) => {
+                let c_ty = IRType::new(c.clone());
+                a.contains(&c_ty) && c_ty.meet(&*b).kind == TypeKind::Bottom
+            }
+
             _ => false,
         }
     }
@@ -423,7 +904,10 @@ impl IRType {
     }
 
     pub fn is_definitely_tuple(&self) -> bool {
-        matches!(self.kind, TypeKind::Tuple { .. } | TypeKind::StableTuple { .. })
+        matches!(
+            self.kind,
+            TypeKind::Tuple { .. } | TypeKind::StableTuple { .. }
+        )
     }
 
     pub fn is_definitely_list(&self) -> bool {
@@ -450,8 +934,13 @@ impl IRType {
     pub fn is_immutable(&self) -> bool {
         match &self.kind {
             TypeKind::StableTuple { immutable, .. } => *immutable,
-            TypeKind::Nil | TypeKind::Atom | TypeKind::Boolean | TypeKind::SmallInt
-            | TypeKind::NonNegInt | TypeKind::Int64 | TypeKind::Float => true,
+            TypeKind::Nil
+            | TypeKind::Atom
+            | TypeKind::Boolean
+            | TypeKind::SmallInt
+            | TypeKind::NonNegInt
+            | TypeKind::Int64
+            | TypeKind::Float => true,
             TypeKind::Tuple { .. } | TypeKind::Cons | TypeKind::List => false,
             _ => false,
         }
@@ -529,7 +1018,11 @@ impl fmt::Display for IRType {
                 element_types,
                 immutable,
             } => {
-                let tag = if *immutable { "stable_tuple" } else { "fixed_tuple" };
+                let tag = if *immutable {
+                    "stable_tuple"
+                } else {
+                    "fixed_tuple"
+                };
                 let elems: Vec<String> = element_types.iter().map(|t| t.to_string()).collect();
                 write!(f, "{}({})", tag, elems.join(", "))
             }
@@ -566,12 +1059,15 @@ impl fmt::Display for IRType {
                 write!(f, "cap<{:?}, {}>", resource, flags)
             }
             TypeKind::Union(a, b) => write!(f, "({} ∪ {})", a, b),
+            TypeKind::Intersection(a, b) => write!(f, "({} ∩ {})", a, b),
+            TypeKind::Difference(a, b) => write!(f, "({} \\ {})", a, b),
             TypeKind::Constant(c) => match c {
                 ConstantValue::Int(i) => write!(f, "const({})", i),
                 ConstantValue::Atom(a) => write!(f, "const(atom:{})", a),
                 ConstantValue::Nil => write!(f, "const(nil)"),
                 ConstantValue::True => write!(f, "const(true)"),
                 ConstantValue::False => write!(f, "const(false)"),
+                ConstantValue::Float(bits) => write!(f, "const(float:{})", bits),
             },
         }
     }
@@ -651,13 +1147,19 @@ mod tests {
             immutable: true,
         });
         let b = IRType::new(TypeKind::StableTuple {
-            element_types: vec![IRType::new(TypeKind::NonNegInt), IRType::new(TypeKind::Atom)],
+            element_types: vec![
+                IRType::new(TypeKind::NonNegInt),
+                IRType::new(TypeKind::Atom),
+            ],
             immutable: true,
         });
         let joined = a.join(&b);
         assert!(matches!(
             joined.kind,
-            TypeKind::StableTuple { immutable: true, .. }
+            TypeKind::StableTuple {
+                immutable: true,
+                ..
+            }
         ));
     }
 
@@ -704,7 +1206,10 @@ mod tests {
             shareable: false,
         });
         assert!(cap.is_capability());
-        assert_eq!(cap.capability_resource(), Some(NativeResourceKind::GpuContext));
+        assert_eq!(
+            cap.capability_resource(),
+            Some(NativeResourceKind::GpuContext)
+        );
     }
 
     #[test]
@@ -745,7 +1250,4 @@ mod tests {
             native_layout: None,
             promotable_to_stable: true,
         };
-        let offsets: Vec<usize> = desc.pointer_offsets().collect();
-        assert_eq!(offsets, vec![8, 24]);
-    }
-}
+null
