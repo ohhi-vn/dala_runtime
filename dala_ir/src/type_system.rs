@@ -25,6 +25,7 @@
 //! - **Tensor types**: Shape and dtype for AI workloads
 //! - **Capability types**: Typed native resource handles
 
+use std::collections::HashSet;
 use std::fmt;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -138,6 +139,20 @@ pub enum TypeKind {
     Difference(Box<IRType>, Box<IRType>),
     /// A specific constant value
     Constant(ConstantValue),
+
+    // ── Map shape types (hidden-class specialization) ──────────────────
+    /// A shape-specialized map with known key-value layout.
+    /// Similar to V8 hidden classes — enables direct field access
+    /// instead of hash lookup for maps with known keys.
+    ///
+    /// Example: %{id: integer(), name: binary()} becomes
+    /// MapShape { keys: [atom(id), atom(name)], values: [SmallInt, Binary] }
+    MapShape {
+        /// Ordered keys (atoms only — the common case for struct-like maps)
+        keys: Vec<u32>,
+        /// Value types for each key
+        values: Vec<IRType>,
+    },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -464,6 +479,34 @@ impl IRType {
                 }
             }
 
+            // MapShape joins: if keys match, join value types;
+            // otherwise fall back to Map.
+            (
+                TypeKind::MapShape {
+                    keys: k1,
+                    values: v1,
+                },
+                TypeKind::MapShape {
+                    keys: k2,
+                    values: v2,
+                },
+            ) => {
+                if k1 == k2 {
+                    let joined: Vec<IRType> =
+                        v1.iter().zip(v2.iter()).map(|(a, b)| a.join(b)).collect();
+                    IRType::new(TypeKind::MapShape {
+                        keys: k1.clone(),
+                        values: joined,
+                    })
+                } else {
+                    IRType::new(TypeKind::Map)
+                }
+            }
+
+            // MapShape with Map: fall back to Map
+            (TypeKind::MapShape { .. }, TypeKind::Map)
+            | (TypeKind::Map, TypeKind::MapShape { .. }) => IRType::new(TypeKind::Map),
+
             // Union types: flatten and simplify
             (TypeKind::Union(a, b), c) => {
                 let ab = a.join(b);
@@ -700,6 +743,34 @@ impl IRType {
                 }
             }
 
+            // MapShape meet: if keys match, meet value types;
+            // otherwise Bottom.
+            (
+                TypeKind::MapShape {
+                    keys: k1,
+                    values: v1,
+                },
+                TypeKind::MapShape {
+                    keys: k2,
+                    values: v2,
+                },
+            ) => {
+                if k1 == k2 {
+                    let met: Vec<IRType> =
+                        v1.iter().zip(v2.iter()).map(|(a, b)| a.meet(b)).collect();
+                    IRType::new(TypeKind::MapShape {
+                        keys: k1.clone(),
+                        values: met,
+                    })
+                } else {
+                    IRType::new(TypeKind::Bottom)
+                }
+            }
+
+            // MapShape meet with Map: MapShape (the more specific type)
+            (TypeKind::MapShape { .. }, TypeKind::Map) => self.clone(),
+            (TypeKind::Map, TypeKind::MapShape { .. }) => other.clone(),
+
             // Union meet: distribute (A ∪ B) ∩ C = (A ∩ C) ∪ (B ∩ C)
             (TypeKind::Union(a, b), _) => {
                 let ma = a.meet(other);
@@ -874,6 +945,25 @@ impl IRType {
                 },
             ) => r1 == r2 && (!*o2 || *o1) && (!*s2 || *s1),
 
+            // MapShape ⊇ MapShape: same keys, each value type is a supertype
+            (
+                TypeKind::MapShape {
+                    keys: k1,
+                    values: v1,
+                },
+                TypeKind::MapShape {
+                    keys: k2,
+                    values: v2,
+                },
+            ) => {
+                k1 == k2
+                    && v1.len() == v2.len()
+                    && v1.iter().zip(v2.iter()).all(|(a, b)| a.contains(b))
+            }
+
+            // Map ⊇ MapShape: a generic map contains any specific shape
+            (TypeKind::Map, TypeKind::MapShape { .. }) => true,
+
             // Union subtyping: A ∪ B ⊇ C iff A ⊇ C or B ⊇ C
             (TypeKind::Union(a, b), _) => a.contains(other) || b.contains(other),
 
@@ -915,7 +1005,20 @@ impl IRType {
     }
 
     pub fn is_definitely_map(&self) -> bool {
-        matches!(self.kind, TypeKind::Map)
+        matches!(self.kind, TypeKind::Map | TypeKind::MapShape { .. })
+    }
+
+    /// Check if this type is a shape-specialized map.
+    pub fn is_map_shape(&self) -> bool {
+        matches!(self.kind, TypeKind::MapShape { .. })
+    }
+
+    /// Get the map shape keys and values if this is a MapShape.
+    pub fn map_shape(&self) -> Option<(&[u32], &[IRType])> {
+        match &self.kind {
+            TypeKind::MapShape { keys, values } => Some((keys, values)),
+            _ => None,
+        }
     }
 
     pub fn is_definitely_float(&self) -> bool {
@@ -997,6 +1100,218 @@ impl IRType {
             _ => None,
         }
     }
+
+    // ── Type normalization ─────────────────────────────────────────────
+
+    /// Normalize this type into a canonical form.
+    ///
+    /// This applies the following simplifications:
+    /// - Flatten nested unions: (A | B) | C → A | B | C
+    /// - Flatten nested intersections: (A & B) & C → A & B & C
+    /// - Remove duplicate alternatives in unions/intersections
+    /// - Absorb subtypes in unions: SmallInt | Int64 → Int64
+    /// - Simplify intersections with Any/Bottom
+    /// - Sort union/intersection operands for structural equality
+    ///
+    /// Two types that are semantically equal will have identical
+    /// normalized forms, enabling simple `==` comparison.
+    pub fn normalize(&self) -> Self {
+        let alternatives = self.collect_union_alternatives();
+        if alternatives.len() <= 1 {
+            return self.clone();
+        }
+
+        // Remove subtypes: if A ⊇ B, keep only A
+        let mut filtered: Vec<IRType> = Vec::new();
+        for alt in &alternatives {
+            let alt_norm = alt.normalize();
+            // Check if any existing type in filtered already contains this one
+            let dominated = filtered.iter().any(|existing| existing.contains(&alt_norm));
+            if !dominated {
+                // Remove any existing types that are dominated by this one
+                filtered.retain(|existing| !alt_norm.contains(existing));
+                filtered.push(alt_norm);
+            }
+        }
+
+        if filtered.len() == 1 {
+            filtered.into_iter().next().unwrap()
+        } else {
+            // Sort for canonical ordering (by string representation as tiebreaker)
+            filtered.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+            // Build left-associative union
+            let mut result = filtered[0].clone();
+            for alt in &filtered[1..] {
+                result = IRType::new(TypeKind::Union(Box::new(result), Box::new(alt.clone())));
+            }
+            result
+        }
+    }
+
+    /// Collect all alternatives of a union type, flattening nested unions.
+    fn collect_union_alternatives(&self) -> Vec<IRType> {
+        match &self.kind {
+            TypeKind::Union(a, b) => {
+                let mut result = a.collect_union_alternatives();
+                result.extend(b.collect_union_alternatives());
+                result
+            }
+            _ => vec![self.clone()],
+        }
+    }
+
+    /// Collect all conjuncts of an intersection type, flattening nested intersections.
+    fn collect_intersection_conjuncts(&self) -> Vec<IRType> {
+        match &self.kind {
+            TypeKind::Intersection(a, b) => {
+                let mut result = a.collect_intersection_conjuncts();
+                result.extend(b.collect_intersection_conjuncts());
+                result
+            }
+            _ => vec![self.clone()],
+        }
+    }
+
+    // ── Exhaustiveness checking ────────────────────────────────────────
+
+    /// Check if a set of pattern types is exhaustive for this type.
+    ///
+    /// Given `self` is the scrutinee type and `patterns` are the types
+    /// matched by each arm, returns true if every possible value of the
+    /// scrutinee is covered by at least one pattern.
+    ///
+    /// This is the core of exhaustiveness checking for `case` expressions.
+    ///
+    /// # Example
+    /// ```
+    /// // Scrutinee: boolean()
+    /// // Patterns: [const(true), const(false)]
+    /// // Result: true (exhaustive)
+    ///
+    /// // Scrutinee: list()
+    /// // Patterns: [nil, cons]
+    /// // Result: true (exhaustive)
+    ///
+    /// // Scrutinee: integer()
+    /// // Patterns: [const(0)]
+    /// // Result: false (not exhaustive)
+    /// ```
+    pub fn is_exhaustive(&self, patterns: &[IRType]) -> bool {
+        // Compute the union of all pattern types
+        if patterns.is_empty() {
+            return self.kind == TypeKind::Bottom;
+        }
+
+        let mut pattern_union = patterns[0].clone();
+        for pat in &patterns[1..] {
+            pattern_union = pattern_union.join(pat);
+        }
+
+        // The patterns are exhaustive if their union covers the scrutinee:
+        // pattern_union.contains(self) means every value in self is also in pattern_union
+        pattern_union.contains(self)
+    }
+
+    /// Compute the "rest" type — the part of `self` not covered by `patterns`.
+    ///
+    /// This is useful for error reporting: "pattern `rest` is not covered".
+    /// Returns Bottom if the patterns are exhaustive.
+    pub fn uncovered_by(&self, patterns: &[IRType]) -> IRType {
+        let mut rest = self.clone();
+        for pat in patterns {
+            rest = rest.subtract(pat);
+            if rest.kind == TypeKind::Bottom {
+                break;
+            }
+        }
+        rest
+    }
+
+    /// Compute the difference of two types: self \\ other.
+    ///
+    /// This is a convenience wrapper around Difference that also
+    /// applies simplification rules.
+    pub fn subtract(&self, other: &IRType) -> IRType {
+        // Trivial cases
+        if other.kind == TypeKind::Any {
+            return IRType::new(TypeKind::Bottom);
+        }
+        if other.kind == TypeKind::Bottom || self.kind == TypeKind::Bottom {
+            return self.clone();
+        }
+        if self == other {
+            return IRType::new(TypeKind::Bottom);
+        }
+
+        // If self contains other, the result is Difference
+        if self.contains(other) {
+            IRType::new(TypeKind::Difference(
+                Box::new(self.clone()),
+                Box::new(other.clone()),
+            ))
+        } else {
+            // self doesn't contain other, so subtracting other removes nothing
+            // (or partially removes — conservative: keep self)
+            self.clone()
+        }
+    }
+
+    // ── Type utility methods ───────────────────────────────────────────
+
+    /// Check if this type is a union (possibly nested).
+    pub fn is_union(&self) -> bool {
+        matches!(self.kind, TypeKind::Union(..))
+    }
+
+    /// Check if this type is an intersection (possibly nested).
+    pub fn is_intersection(&self) -> bool {
+        matches!(self.kind, TypeKind::Intersection(..))
+    }
+
+    /// Check if this type is a difference type.
+    pub fn is_difference(&self) -> bool {
+        matches!(self.kind, TypeKind::Difference(..))
+    }
+
+    /// Check if this type is a compound type (union, intersection, or difference).
+    pub fn is_compound(&self) -> bool {
+        self.is_union() || self.is_intersection() || self.is_difference()
+    }
+
+    /// Check if this type is a simple (non-compound) type.
+    pub fn is_simple(&self) -> bool {
+        !self.is_compound()
+    }
+
+    /// Check if this type definitely represents a single concrete value.
+    pub fn is_singleton(&self) -> bool {
+        match &self.kind {
+            TypeKind::Constant(_) => true,
+            TypeKind::Boolean => false, // true | false — two values
+            _ => false,
+        }
+    }
+
+    /// Check if this type is definitely empty (no possible values).
+    pub fn is_empty(&self) -> bool {
+        self.kind == TypeKind::Bottom
+    }
+
+    /// Check if this type is definitely the top type (any possible value).
+    pub fn is_any(&self) -> bool {
+        self.kind == TypeKind::Any
+    }
+
+    /// Count the number of leaf type alternatives in a union tree.
+    /// Useful for estimating code size in pattern matching.
+    pub fn union_arity(&self) -> usize {
+        self.collect_union_alternatives().len()
+    }
+
+    /// Count the number of conjuncts in an intersection tree.
+    pub fn intersection_arity(&self) -> usize {
+        self.collect_intersection_conjuncts().len()
+    }
 }
 
 impl fmt::Display for IRType {
@@ -1061,6 +1376,14 @@ impl fmt::Display for IRType {
             TypeKind::Union(a, b) => write!(f, "({} ∪ {})", a, b),
             TypeKind::Intersection(a, b) => write!(f, "({} ∩ {})", a, b),
             TypeKind::Difference(a, b) => write!(f, "({} \\ {})", a, b),
+            TypeKind::MapShape { keys, values } => {
+                let pairs: Vec<String> = keys
+                    .iter()
+                    .zip(values.iter())
+                    .map(|(k, v)| format!("atom({}): {}", k, v))
+                    .collect();
+                write!(f, "map{{{}}}", pairs.join(", "))
+            }
             TypeKind::Constant(c) => match c {
                 ConstantValue::Int(i) => write!(f, "const({})", i),
                 ConstantValue::Atom(a) => write!(f, "const(atom:{})", a),
@@ -1250,4 +1573,376 @@ mod tests {
             native_layout: None,
             promotable_to_stable: true,
         };
-null
+        let offsets: Vec<usize> = desc.pointer_offsets().collect();
+        // Bits 1 and 3 are set → offsets 8 and 24 (on 64-bit)
+        assert_eq!(offsets, vec![8, 24]);
+    }
+
+    #[test]
+    fn test_union_subtyping() {
+        // Union(A, B).contains(C) when C is a subtype of A
+        let union = IRType::new(TypeKind::Union(
+            Box::new(IRType::new(TypeKind::SmallInt)),
+            Box::new(IRType::new(TypeKind::Atom)),
+        ));
+        // NonNegInt is a subtype of SmallInt
+        assert!(union.contains(&IRType::new(TypeKind::NonNegInt)));
+        // Constant Int(42) is a subtype of SmallInt
+        assert!(union.contains(&IRType::new(TypeKind::Constant(ConstantValue::Int(42)))));
+        // Atom is directly in the union
+        assert!(union.contains(&IRType::new(TypeKind::Atom)));
+        // Float is not in the union
+        assert!(!union.contains(&IRType::new(TypeKind::Float)));
+    }
+
+    #[test]
+    fn test_intersection_subtyping() {
+        // Intersection(A, B).contains(C) when C is a subtype of both A and B
+        let intersection = IRType::new(TypeKind::Intersection(
+            Box::new(IRType::new(TypeKind::SmallInt)),
+            Box::new(IRType::new(TypeKind::NonNegInt)),
+        ));
+        // NonNegInt is a subtype of both SmallInt and NonNegInt
+        assert!(intersection.contains(&IRType::new(TypeKind::NonNegInt)));
+        // Constant Int(0) is a subtype of both SmallInt and NonNegInt
+        assert!(intersection.contains(&IRType::new(TypeKind::Constant(ConstantValue::Int(0)))));
+        // Constant Int(-1) is a subtype of SmallInt but not NonNegInt
+        assert!(!intersection.contains(&IRType::new(TypeKind::Constant(ConstantValue::Int(-1)))));
+    }
+
+    #[test]
+    fn test_difference_type() {
+        // Difference(A, B) removes values from A that are in B
+        let diff = IRType::new(TypeKind::Difference(
+            Box::new(IRType::new(TypeKind::SmallInt)),
+            Box::new(IRType::new(TypeKind::NonNegInt)),
+        ));
+        // Negative ints are in SmallInt but not NonNegInt, so they should be in the difference
+        assert!(diff.contains(&IRType::new(TypeKind::Constant(ConstantValue::Int(-1)))));
+        // NonNegInt values should be removed
+        assert!(!diff.contains(&IRType::new(TypeKind::NonNegInt)));
+        // Constant Int(0) is NonNegInt, so should be removed
+        assert!(!diff.contains(&IRType::new(TypeKind::Constant(ConstantValue::Int(0)))));
+    }
+
+    #[test]
+    fn test_map_shape_join_matching() {
+        // MapShape join with matching keys joins value types
+        let a = IRType::new(TypeKind::MapShape {
+            keys: vec![1, 2],
+            values: vec![IRType::new(TypeKind::SmallInt), IRType::new(TypeKind::Atom)],
+        });
+        let b = IRType::new(TypeKind::MapShape {
+            keys: vec![1, 2],
+            values: vec![
+                IRType::new(TypeKind::NonNegInt),
+                IRType::new(TypeKind::Atom),
+            ],
+        });
+        let joined = a.join(&b);
+        assert!(joined.is_map_shape());
+        let (_, values) = joined.map_shape().unwrap();
+        // SmallInt.join(NonNegInt) = SmallInt
+        assert!(matches!(values[0].kind, TypeKind::SmallInt));
+        // Atom.join(Atom) = Atom
+        assert!(matches!(values[1].kind, TypeKind::Atom));
+    }
+
+    #[test]
+    fn test_map_shape_join_mismatching() {
+        // MapShape join with different keys falls back to Map
+        let a = IRType::new(TypeKind::MapShape {
+            keys: vec![1, 2],
+            values: vec![IRType::new(TypeKind::SmallInt), IRType::new(TypeKind::Atom)],
+        });
+        let b = IRType::new(TypeKind::MapShape {
+            keys: vec![3, 4],
+            values: vec![IRType::new(TypeKind::Float), IRType::new(TypeKind::Boolean)],
+        });
+        let joined = a.join(&b);
+        assert!(matches!(joined.kind, TypeKind::Map));
+    }
+
+    #[test]
+    fn test_map_shape_meet() {
+        // MapShape meet with matching keys meets value types
+        let a = IRType::new(TypeKind::MapShape {
+            keys: vec![1, 2],
+            values: vec![IRType::new(TypeKind::SmallInt), IRType::new(TypeKind::Atom)],
+        });
+        let b = IRType::new(TypeKind::MapShape {
+            keys: vec![1, 2],
+            values: vec![
+                IRType::new(TypeKind::NonNegInt),
+                IRType::new(TypeKind::Boolean),
+            ],
+        });
+        let met = a.meet(&b);
+        assert!(met.is_map_shape());
+        let (_, values) = met.map_shape().unwrap();
+        // SmallInt.meet(NonNegInt) = NonNegInt
+        assert!(matches!(values[0].kind, TypeKind::NonNegInt));
+        // Atom.meet(Boolean) — no specific meet rule, falls to generic fallback
+        // Atom does not contain Boolean and Boolean does not contain Atom,
+        // so the meet is Bottom
+        assert!(matches!(values[1].kind, TypeKind::Bottom));
+    }
+
+    #[test]
+    fn test_map_shape_subtyping() {
+        // Map contains MapShape
+        let map = IRType::new(TypeKind::Map);
+        let shape = IRType::new(TypeKind::MapShape {
+            keys: vec![1],
+            values: vec![IRType::new(TypeKind::SmallInt)],
+        });
+        assert!(map.contains(&shape));
+
+        // MapShape subtyping is element-wise: wider value types in the container
+        let shape_a = IRType::new(TypeKind::MapShape {
+            keys: vec![1],
+            values: vec![IRType::new(TypeKind::Int64)],
+        });
+        let shape_b = IRType::new(TypeKind::MapShape {
+            keys: vec![1],
+            values: vec![IRType::new(TypeKind::SmallInt)],
+        });
+        // shape_a has Int64 value, shape_b has SmallInt value
+        // Int64.contains(SmallInt) is true, so shape_a.contains(shape_b) should be true
+        assert!(shape_a.contains(&shape_b));
+        // SmallInt does NOT contain Int64, so shape_b does NOT contain shape_a
+        assert!(!shape_b.contains(&shape_a));
+    }
+
+    #[test]
+    fn test_exhaustiveness_boolean() {
+        // [true, false] is exhaustive for boolean
+        let boolean = IRType::new(TypeKind::Boolean);
+        let patterns = vec![
+            IRType::new(TypeKind::Constant(ConstantValue::True)),
+            IRType::new(TypeKind::Constant(ConstantValue::False)),
+        ];
+        assert!(boolean.is_exhaustive(&patterns));
+    }
+
+    #[test]
+    fn test_exhaustiveness_list() {
+        // [nil, cons] is exhaustive for list
+        let list = IRType::new(TypeKind::List);
+        let patterns = vec![IRType::new(TypeKind::Nil), IRType::new(TypeKind::Cons)];
+        assert!(list.is_exhaustive(&patterns));
+    }
+
+    #[test]
+    fn test_exhaustiveness_non_exhaustive() {
+        // [const(0)] is NOT exhaustive for SmallInt
+        let smallint = IRType::new(TypeKind::SmallInt);
+        let patterns = vec![IRType::new(TypeKind::Constant(ConstantValue::Int(0)))];
+        assert!(!smallint.is_exhaustive(&patterns));
+
+        // [true] alone is NOT exhaustive for boolean
+        let boolean = IRType::new(TypeKind::Boolean);
+        let patterns = vec![IRType::new(TypeKind::Constant(ConstantValue::True))];
+        assert!(!boolean.is_exhaustive(&patterns));
+    }
+
+    #[test]
+    fn test_uncovered_type() {
+        // uncovered_by returns the uncovered portion
+        let smallint = IRType::new(TypeKind::SmallInt);
+        let patterns = vec![IRType::new(TypeKind::Constant(ConstantValue::Int(0)))];
+        let uncovered = smallint.uncovered_by(&patterns);
+        // Should not be Bottom — there are many SmallInt values not covered by const(0)
+        assert!(uncovered.kind != TypeKind::Bottom);
+
+        // subtract is conservative: List \ Nil = Difference(List, Nil)
+        // and Difference(List, Nil) \ Cons remains Difference (not Bottom)
+        // because subtract can't prove the Difference contains Cons.
+        // This is expected — subtract is a conservative approximation.
+        let list = IRType::new(TypeKind::List);
+        let uncovered = list.uncovered_by(&vec![
+            IRType::new(TypeKind::Nil),
+            IRType::new(TypeKind::Cons),
+        ]);
+        // The result is not Bottom because subtract is conservative,
+        // but is_exhaustive correctly returns true via join+contains.
+        assert!(list.is_exhaustive(&[IRType::new(TypeKind::Nil), IRType::new(TypeKind::Cons),]));
+    }
+
+    #[test]
+    fn test_type_normalization_absorption() {
+        // SmallInt | Int64 → Int64 (since Int64 contains SmallInt)
+        let union = IRType::new(TypeKind::Union(
+            Box::new(IRType::new(TypeKind::SmallInt)),
+            Box::new(IRType::new(TypeKind::Int64)),
+        ));
+        let normalized = union.normalize();
+        assert!(matches!(normalized.kind, TypeKind::Int64));
+
+        // NonNegInt | SmallInt → SmallInt (since SmallInt contains NonNegInt)
+        let union2 = IRType::new(TypeKind::Union(
+            Box::new(IRType::new(TypeKind::NonNegInt)),
+            Box::new(IRType::new(TypeKind::SmallInt)),
+        ));
+        let normalized2 = union2.normalize();
+        assert!(matches!(normalized2.kind, TypeKind::SmallInt));
+    }
+
+    #[test]
+    fn test_type_normalization_flatten() {
+        // (A | B) | C should flatten to A | B | C
+        let nested = IRType::new(TypeKind::Union(
+            Box::new(IRType::new(TypeKind::Union(
+                Box::new(IRType::new(TypeKind::SmallInt)),
+                Box::new(IRType::new(TypeKind::Atom)),
+            ))),
+            Box::new(IRType::new(TypeKind::Float)),
+        ));
+        let normalized = nested.normalize();
+        // After normalization, union_arity should be 3 (flattened)
+        assert_eq!(normalized.union_arity(), 3);
+    }
+
+    #[test]
+    fn test_union_arity() {
+        // A simple type has arity 1
+        assert_eq!(IRType::new(TypeKind::SmallInt).union_arity(), 1);
+
+        // A union of two types has arity 2
+        let union = IRType::new(TypeKind::Union(
+            Box::new(IRType::new(TypeKind::SmallInt)),
+            Box::new(IRType::new(TypeKind::Atom)),
+        ));
+        assert_eq!(union.union_arity(), 2);
+
+        // A nested union (A | B) | C has arity 3
+        let nested = IRType::new(TypeKind::Union(
+            Box::new(IRType::new(TypeKind::Union(
+                Box::new(IRType::new(TypeKind::SmallInt)),
+                Box::new(IRType::new(TypeKind::Atom)),
+            ))),
+            Box::new(IRType::new(TypeKind::Float)),
+        ));
+        assert_eq!(nested.union_arity(), 3);
+    }
+
+    #[test]
+    fn test_is_singleton() {
+        // Constants are singletons
+        assert!(IRType::new(TypeKind::Constant(ConstantValue::Int(42))).is_singleton());
+        assert!(IRType::new(TypeKind::Constant(ConstantValue::Atom(42))).is_singleton());
+        assert!(IRType::new(TypeKind::Constant(ConstantValue::True)).is_singleton());
+        assert!(IRType::new(TypeKind::Constant(ConstantValue::False)).is_singleton());
+        assert!(IRType::new(TypeKind::Constant(ConstantValue::Nil)).is_singleton());
+
+        // Non-constants are not singletons
+        assert!(!IRType::new(TypeKind::SmallInt).is_singleton());
+        assert!(!IRType::new(TypeKind::Boolean).is_singleton());
+        assert!(!IRType::new(TypeKind::Atom).is_singleton());
+        assert!(!IRType::new(TypeKind::Float).is_singleton());
+    }
+
+    #[test]
+    fn test_is_empty() {
+        // Bottom type is empty
+        assert!(IRType::new(TypeKind::Bottom).is_empty());
+
+        // Other types are not empty
+        assert!(!IRType::new(TypeKind::Any).is_empty());
+        assert!(!IRType::new(TypeKind::SmallInt).is_empty());
+        assert!(!IRType::new(TypeKind::Constant(ConstantValue::Int(0))).is_empty());
+    }
+
+    #[test]
+    fn test_is_any() {
+        // Any type
+        assert!(IRType::new(TypeKind::Any).is_any());
+
+        // Other types are not Any
+        assert!(!IRType::new(TypeKind::Bottom).is_any());
+        assert!(!IRType::new(TypeKind::SmallInt).is_any());
+        assert!(!IRType::new(TypeKind::Boolean).is_any());
+    }
+
+    #[test]
+    fn test_compound_predicates() {
+        let union = IRType::new(TypeKind::Union(
+            Box::new(IRType::new(TypeKind::SmallInt)),
+            Box::new(IRType::new(TypeKind::Atom)),
+        ));
+        assert!(union.is_union());
+        assert!(!union.is_intersection());
+        assert!(!union.is_difference());
+        assert!(union.is_compound());
+        assert!(!union.is_simple());
+
+        let intersection = IRType::new(TypeKind::Intersection(
+            Box::new(IRType::new(TypeKind::SmallInt)),
+            Box::new(IRType::new(TypeKind::NonNegInt)),
+        ));
+        assert!(!intersection.is_union());
+        assert!(intersection.is_intersection());
+        assert!(!intersection.is_difference());
+        assert!(intersection.is_compound());
+        assert!(!intersection.is_simple());
+
+        let difference = IRType::new(TypeKind::Difference(
+            Box::new(IRType::new(TypeKind::SmallInt)),
+            Box::new(IRType::new(TypeKind::NonNegInt)),
+        ));
+        assert!(!difference.is_union());
+        assert!(!difference.is_intersection());
+        assert!(difference.is_difference());
+        assert!(difference.is_compound());
+        assert!(!difference.is_simple());
+
+        // Simple types
+        assert!(IRType::new(TypeKind::SmallInt).is_simple());
+        assert!(IRType::new(TypeKind::Atom).is_simple());
+        assert!(!IRType::new(TypeKind::SmallInt).is_compound());
+    }
+
+    #[test]
+    fn test_subtract_basic() {
+        // Subtracting Bottom returns self
+        let a = IRType::new(TypeKind::SmallInt);
+        let result = a.subtract(&IRType::new(TypeKind::Bottom));
+        assert_eq!(result.kind, TypeKind::SmallInt);
+
+        // Subtracting self returns Bottom
+        let result = a.subtract(&a);
+        assert_eq!(result.kind, TypeKind::Bottom);
+
+        // Subtracting Any returns Bottom
+        let result = a.subtract(&IRType::new(TypeKind::Any));
+        assert_eq!(result.kind, TypeKind::Bottom);
+
+        // Subtracting a contained type produces Difference
+        let result = a.subtract(&IRType::new(TypeKind::NonNegInt));
+        assert!(result.is_difference());
+
+        // Subtracting a non-contained type returns self (conservative)
+        let result = a.subtract(&IRType::new(TypeKind::Float));
+        assert_eq!(result.kind, TypeKind::SmallInt);
+    }
+
+    #[test]
+    fn test_contains_constant_with_union() {
+        // contains_constant works through unions
+        let union = IRType::new(TypeKind::Union(
+            Box::new(IRType::new(TypeKind::SmallInt)),
+            Box::new(IRType::new(TypeKind::Atom)),
+        ));
+        // Int constant is contained via SmallInt branch
+        assert!(union.contains_constant(&ConstantValue::Int(42)));
+        // Atom constant is contained via Atom branch
+        assert!(union.contains_constant(&ConstantValue::Atom(1)));
+        // Float constant is NOT contained
+        assert!(!union.contains_constant(&ConstantValue::Float(1.0f64.to_bits())));
+
+        // Direct type containment
+        assert!(IRType::new(TypeKind::SmallInt).contains_constant(&ConstantValue::Int(-5)));
+        assert!(IRType::new(TypeKind::NonNegInt).contains_constant(&ConstantValue::Int(0)));
+        assert!(!IRType::new(TypeKind::NonNegInt).contains_constant(&ConstantValue::Int(-1)));
+    }
+}

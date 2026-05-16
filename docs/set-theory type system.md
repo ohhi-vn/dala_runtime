@@ -203,7 +203,10 @@ pub enum TypeKind {
 
     // Set-theoretic connectives
     Union(Box<IRType>, Box<IRType>),  // A | B
+    Intersection(Box<IRType>, Box<IRType>),  // A & B
+    Difference(Box<IRType>, Box<IRType>),    // A \\ B
     Constant(ConstantValue),          // A specific constant value
+    MapShape { keys: Vec<u32>, values: Vec<IRType> },  // Hidden-class map
 }
 ```
 
@@ -224,11 +227,12 @@ pub enum TypeKind {
 | Actor types with lifecycle | Implemented | `type_system.rs` |
 | Tensor types (shape + dtype) | Implemented | `type_system.rs` |
 | Capability types (native resources) | Implemented | `type_system.rs` |
-| Exhaustiveness checking | Partial | `opt/pattern_match.rs` |
-| Full intersection types (A & B) | Partial | Via meet() |
-| Negation types (not A) | Planned | — |
+| Exhaustiveness checking | Implemented | `type_system.rs` |
+| Full intersection types (A & B) | Implemented | `type_system.rs` |
+| Negation types (not A) | Implemented | `type_system.rs` (Difference) |
 | Recursive types | Planned | — |
-| Map shape types | Planned | — |
+| Map shape types | Implemented | `type_system.rs` |
+| Type normalization/simplification | Implemented | `type_system.rs` |
 | Tallying constraint solver | Planned | — |
 | Type inference from BEAM code | Planned | — |
 
@@ -697,9 +701,11 @@ IRInstKind::IsMyNewType { value } if *value == test_value => {
 ### Phase 2 — Optimization (In Progress)
 - [x] Pattern matching type-test chain -> switch conversion
 - [x] Stable tuple fast-path access
-- [ ] Full intersection type support (currently via meet)
-- [ ] Negation type support
-- [ ] Exhaustiveness checking for case expressions
+- [x] Full intersection type support
+- [x] Negation type support (Difference)
+- [x] Exhaustiveness checking for case expressions
+- [x] Type normalization and simplification
+- [x] Map shape types (hidden-class specialization)
 - [ ] Speculative arithmetic specialization
 - [ ] Speculative pattern matching dispatch
 

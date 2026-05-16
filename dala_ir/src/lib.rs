@@ -33,8 +33,8 @@ pub use function::IRFunction;
 pub use instruction::{IRInst, IRInstKind, TensorOpKind};
 pub use module::IRModule;
 pub use type_system::{
-    ActorLifecycle, ConstantValue, IRType, MessagePriority, NativeResourceKind, TensorDtype,
-    TypeDescriptor,
+    ActorLifecycle, ConstantValue, IRType, MessagePriority, NativeField, NativeFieldKind,
+    NativeLayout, NativeResourceKind, TensorDtype, TypeDescriptor,
 };
 pub use value::{IRValue, IRValueId};
 
