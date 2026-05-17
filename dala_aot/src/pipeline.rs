@@ -81,6 +81,7 @@ impl Pipeline {
             compiled_functions: Vec::new(),
         }
     }
+
     pub fn run(&mut self) -> Result<PipelineStats, PipelineError> {
         let mut stats = PipelineStats::default();
         info!("Stage 1: Loading BEAM bytecode");
@@ -111,6 +112,7 @@ impl Pipeline {
         self.emit_output(&stats)?;
         Ok(stats)
     }
+
     fn load_beam(&self) -> Result<BeamModule, PipelineError> {
         let path = self
             .config
@@ -120,6 +122,7 @@ impl Pipeline {
         dala_beam_loader::load_beam_file(path)
             .map_err(|e| PipelineError::BeamLoadError(e.to_string()))
     }
+
     fn emit_output(&self, stats: &PipelineStats) -> Result<(), PipelineError> {
         let mut output = String::new();
         output.push_str("; Dala AOT Compilation Output\n");
@@ -289,6 +292,18 @@ fn translate_beam_function(
     func
 }
 
+#[inline]
+fn push_nop(block: &mut dala_ir::function::BasicBlock) {
+    block.push_inst(dala_ir::instruction::IRInst::new(IRInstKind::Nop));
+}
+
+#[inline]
+fn push_ret(block: &mut dala_ir::function::BasicBlock) {
+    block.push_inst(dala_ir::instruction::IRInst::new(IRInstKind::Ret {
+        value: dala_ir::value::IRValueId(0),
+    }));
+}
+
 fn translate_beam_instruction(
     block: &mut dala_ir::function::BasicBlock,
     inst: &BeamInstruction,
@@ -297,22 +312,8 @@ fn translate_beam_instruction(
     use dala_ir::instruction::{IRInst, IRInstKind, Reg};
     use dala_ir::value::IRValueId;
 
-    macro_rules! nop {
-        () => {
-            block.push_inst(IRInst::new(IRInstKind::Nop))
-        };
-    }
-    macro_rules! ret {
-        () => {
-            block.push_inst(IRInst::new(IRInstKind::Ret {
-                value: IRValueId(0),
-            }))
-        };
-    }
-
     match inst.opcode {
         0 => {
-            // move
             if let (Some(BeamOperand::Register(src)), Some(BeamOperand::Register(dst))) =
                 (inst.operands.first(), inst.operands.get(1))
             {
@@ -323,11 +324,11 @@ fn translate_beam_instruction(
             }
         }
         1 => {
-            nop!();
-        } // call
+            push_nop(block);
+        }
         2 => {
-            ret!();
-        } // return
+            push_ret(block);
+        }
         3 => {
             block.push_inst(IRInst::new(IRInstKind::IsSmallInt));
         }
@@ -380,7 +381,6 @@ fn translate_beam_instruction(
             block.push_inst(IRInst::new(IRInstKind::Gt));
         }
         20 => {
-            // allocate
             let words = match inst.operands.first() {
                 Some(BeamOperand::Integer(n)) => *n as u32,
                 _ => 1,
@@ -388,8 +388,8 @@ fn translate_beam_instruction(
             block.push_inst(IRInst::new(IRInstKind::Alloc { words }));
         }
         21 => {
-            nop!();
-        } // deallocate => nop (GC)
+            push_nop(block);
+        }
         22 => {
             block.push_inst(IRInst::new(IRInstKind::GcSafe));
         }
@@ -436,10 +436,9 @@ fn translate_beam_instruction(
             block.push_inst(IRInst::new(IRInstKind::Le));
         }
         35 | 36 => {
-            nop!();
-        } // put_tuple / put
+            push_nop(block);
+        }
         37 => {
-            // get_tuple_element
             let idx = match inst.operands.get(2) {
                 Some(BeamOperand::Integer(n)) => *n as u32,
                 _ => 0,
@@ -457,8 +456,8 @@ fn translate_beam_instruction(
             }));
         }
         39 => {
-            nop!();
-        } // put_list
+            push_nop(block);
+        }
         40 => {
             block.push_inst(IRInst::new(IRInstKind::Throw {
                 reason: IRValueId(0),
@@ -471,8 +470,8 @@ fn translate_beam_instruction(
             }));
         }
         42 => {
-            nop!();
-        } // remove_message
+            push_nop(block);
+        }
         43 => {
             block.push_inst(IRInst::new(IRInstKind::ConsumeReductions { count: 1 }));
         }
@@ -480,35 +479,35 @@ fn translate_beam_instruction(
             block.push_inst(IRInst::new(IRInstKind::Recv { timeout: 0 }));
         }
         45 => {
-            nop!();
-        } // loop_rec_end
+            push_nop(block);
+        }
         46 => {
             block.push_inst(IRInst::new(IRInstKind::Recv { timeout: u32::MAX }));
-        } // wait
+        }
         47 => {
             block.push_inst(IRInst::new(IRInstKind::Recv { timeout: 0 }));
-        } // wait_timeout
+        }
         48 => {
             block.push_inst(IRInst::new(IRInstKind::IsTrue));
-        } // is_boolean
+        }
         49 | 50 | 51 => {
-            nop!();
-        } // is_number / is_port / is_reference
+            push_nop(block);
+        }
         52 => {
             block.push_inst(IRInst::new(IRInstKind::IsMap));
         }
         53 => {
             block.push_inst(IRInst::new(IRInstKind::IsList));
-        } // is_nonempty_list
+        }
         54 => {
             block.push_inst(IRInst::new(IRInstKind::IsBinary));
-        } // is_bitstring
+        }
         55..=62 => {
-            nop!();
-        } // bs_* opcodes
+            push_nop(block);
+        }
         63 | 64 => {
-            nop!();
-        } // fclearerror / fcheckerror
+            push_nop(block);
+        }
         65 => {
             block.push_inst(IRInst::new(IRInstKind::Move {
                 src: Reg::F(0),
@@ -516,23 +515,23 @@ fn translate_beam_instruction(
             }));
         }
         66 => {
-            nop!();
-        } // fconv
+            push_nop(block);
+        }
         67 => {
             block.push_inst(IRInst::new(IRInstKind::Add));
-        } // fadd
+        }
         68 => {
             block.push_inst(IRInst::new(IRInstKind::Sub));
-        } // fsub
+        }
         69 => {
             block.push_inst(IRInst::new(IRInstKind::Mul));
-        } // fmul
+        }
         70 => {
             block.push_inst(IRInst::new(IRInstKind::Div));
-        } // fdiv
+        }
         71 => {
             block.push_inst(IRInst::new(IRInstKind::Neg));
-        } // fnegate
+        }
         72 => {
             block.push_inst(IRInst::new(IRInstKind::MakeFun {
                 module: IRValueId(0),
@@ -547,19 +546,19 @@ fn translate_beam_instruction(
             }));
         }
         74 => {
-            nop!();
-        } // try_end
+            push_nop(block);
+        }
         75 => {
             block.push_inst(IRInst::new(IRInstKind::CatchPop));
-        } // try_case
+        }
         76 => {
             block.push_inst(IRInst::new(IRInstKind::Throw {
                 reason: IRValueId(0),
             }));
         }
         77 | 78 => {
-            nop!();
-        } // apply / apply_last
+            push_nop(block);
+        }
         79 | 80 | 81 | 127 => {
             block.push_inst(IRInst::new(IRInstKind::CallBif {
                 module: IRValueId(0),
@@ -568,26 +567,26 @@ fn translate_beam_instruction(
             }));
         }
         82 => {
-            nop!();
-        } // trim
+            push_nop(block);
+        }
         83 | 84 => {
-            nop!();
-        } // get_hd / get_tl
+            push_nop(block);
+        }
         85 | 86 => {
-            nop!();
-        } // put_map_assoc/exact
+            push_nop(block);
+        }
         87 => {
-            nop!();
-        } // get_map_element
+            push_nop(block);
+        }
         88 => {
             block.push_inst(IRInst::new(IRInstKind::IsFun));
-        } // is_function2
+        }
         89..=98 => {
-            nop!();
-        } // bs_start_match3 through bs_restore2
+            push_nop(block);
+        }
         99 | 100 => {
-            nop!();
-        } // catch / catch_end
+            push_nop(block);
+        }
         101 => {
             block.push_inst(IRInst::new(IRInstKind::Call {
                 func: IRValueId(0),
@@ -595,17 +594,17 @@ fn translate_beam_instruction(
             }));
         }
         102 => {
-            nop!();
-        } // is_seq_trace
+            push_nop(block);
+        }
         103 | 104 => {
-            nop!();
-        } // bs_init2 / bs_bits_to_bytes
+            push_nop(block);
+        }
         105 => {
             block.push_inst(IRInst::new(IRInstKind::Add));
-        } // bs_add
+        }
         106..=110 => {
-            nop!();
-        } // utf8/16/32 bs ops
+            push_nop(block);
+        }
         111 | 112 => {
             block.push_inst(IRInst::new(IRInstKind::Switch {
                 value: IRValueId(0),
@@ -614,8 +613,8 @@ fn translate_beam_instruction(
             }));
         }
         113 => {
-            nop!();
-        } // line
+            push_nop(block);
+        }
         114 => {
             block.push_inst(IRInst::new(IRInstKind::TailCall {
                 func: IRValueId(0),
@@ -626,27 +625,27 @@ fn translate_beam_instruction(
             block.push_inst(IRInst::new(IRInstKind::BinaryNew { data: IRValueId(0) }));
         }
         116..=123 => {
-            nop!();
-        } // bs_utf8/16/32 get/skip + bs_init_writable
+            push_nop(block);
+        }
         124 => {
-            nop!();
-        } // on_load
+            push_nop(block);
+        }
         125 | 126 => {
-            nop!();
-        } // recv_mark / recv_set
+            push_nop(block);
+        }
         128 => {
-            nop!();
-        } // put_literal
+            push_nop(block);
+        }
         129 => {
             block.push_inst(IRInst::new(IRInstKind::IsMap));
-        } // is_map_key
+        }
         130 => {
-            nop!();
-        } // get_map_values
+            push_nop(block);
+        }
         131 | 132 => {
-            nop!();
-        } // get_sd / set_sd
-        133 | 180..=200 => {
+            push_nop(block);
+        }
+        133 => {
             block.push_inst(IRInst::new(IRInstKind::TupleGet {
                 tuple: IRValueId(0),
                 index: 0,
@@ -666,8 +665,8 @@ fn translate_beam_instruction(
             }));
         }
         136 => {
-            nop!();
-        } // i_recv_set
+            push_nop(block);
+        }
         137..=139 => {
             block.push_inst(IRInst::new(IRInstKind::Switch {
                 value: IRValueId(0),
@@ -676,8 +675,8 @@ fn translate_beam_instruction(
             }));
         }
         140 => {
-            nop!();
-        } // i_get_map_element
+            push_nop(block);
+        }
         141 => {
             block.push_inst(IRInst::new(IRInstKind::TupleGet {
                 tuple: IRValueId(0),
@@ -685,38 +684,38 @@ fn translate_beam_instruction(
             }));
         }
         142..=143 => {
-            nop!();
-        } // i_put_tuple / i_fetch
+            push_nop(block);
+        }
         144 => {
             block.push_inst(IRInst::new(IRInstKind::Recv { timeout: 0 }));
-        } // i_loop_rec
+        }
         145 | 146 => {
-            nop!();
-        } // i_wait_timeout / i_wait_error
+            push_nop(block);
+        }
         147 | 151 | 153 | 156 | 158 => {
             block.push_inst(IRInst::new(IRInstKind::Eq));
-        } // i_is_eq_*
+        }
         148 | 152 | 157 => {
             block.push_inst(IRInst::new(IRInstKind::Ne));
-        } // i_is_ne_*
+        }
         149 | 154 => {
             block.push_inst(IRInst::new(IRInstKind::Lt));
-        } // i_is_lt_*
+        }
         150 | 155 => {
             block.push_inst(IRInst::new(IRInstKind::Ge));
-        } // i_is_ge_*
+        }
         159 => {
             block.push_inst(IRInst::new(IRInstKind::Add));
-        } // i_increment
+        }
         160 => {
             block.push_inst(IRInst::new(IRInstKind::Sub));
-        } // i_decrement
+        }
         161 => {
             block.push_inst(IRInst::new(IRInstKind::Mul));
-        } // i_times
+        }
         162..=165 => {
-            nop!();
-        } // i_maybe_match_*
+            push_nop(block);
+        }
         166 => {
             block.push_inst(IRInst::new(IRInstKind::TupleGet {
                 tuple: IRValueId(0),
@@ -724,8 +723,8 @@ fn translate_beam_instruction(
             }));
         }
         167 | 168 => {
-            nop!();
-        } // i_apply / i_apply_last
+            push_nop(block);
+        }
         169 | 170 => {
             block.push_inst(IRInst::new(IRInstKind::Call {
                 func: IRValueId(0),
@@ -751,10 +750,10 @@ fn translate_beam_instruction(
             }));
         }
         182 | 183 => {
-            nop!();
-        } // i_put_tuple2 / i_put_tuple3
+            push_nop(block);
+        }
         _ => {
-            nop!();
+            push_nop(block);
         }
     }
 }
