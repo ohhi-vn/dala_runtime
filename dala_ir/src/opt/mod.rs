@@ -12,9 +12,13 @@
 pub mod const_prop;
 pub mod cse;
 pub mod dce;
+pub mod escape_analysis;
+pub mod native_specialize;
 pub mod pattern_match;
 pub mod simplify_cfg;
+pub mod speculative;
 pub mod tail_call;
+pub mod type_inference;
 pub mod validation;
 
 use crate::function::IRFunction;
@@ -64,6 +68,26 @@ pub fn optimize(func: &mut IRFunction) {
         if pattern_match::optimize(func) {
             changed = true;
         }
+
+        // Type inference
+        if type_inference::infer_and_annotate(func) {
+            changed = true;
+        }
+
+        // Escape analysis
+        if escape_analysis::optimize(func) {
+            changed = true;
+        }
+
+        // Native layout specialization
+        if native_specialize::specialize(func) {
+            changed = true;
+        }
+
+        // Speculative optimization
+        if speculative::optimize(func) {
+            changed = true;
+        }
     }
 
     log::debug!("Optimization converged after {} iterations", iteration);
@@ -79,6 +103,10 @@ pub fn run_pass(func: &mut IRFunction, pass_name: &str) -> bool {
         "simplify-cfg" => simplify_cfg::simplify(func),
         "tail-call" => tail_call::analyze(func),
         "pattern-match" => pattern_match::optimize(func),
+        "type-inference" => type_inference::infer_and_annotate(func),
+        "escape-analysis" => escape_analysis::optimize(func),
+        "native-specialize" => native_specialize::specialize(func),
+        "speculative" => speculative::optimize(func),
         _ => {
             log::warn!("Unknown optimization pass: {}", pass_name);
             false

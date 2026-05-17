@@ -25,7 +25,6 @@
 //! - **Tensor types**: Shape and dtype for AI workloads
 //! - **Capability types**: Typed native resource handles
 
-use std::collections::HashSet;
 use std::fmt;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -153,6 +152,46 @@ pub enum TypeKind {
         /// Value types for each key
         values: Vec<IRType>,
     },
+
+    // ── Recursive type ─────────────────────────────────────────────────
+    /// A recursive type variable — used for type inference of recursive
+    /// functions and data structures.  The `id` is a de Bruijn index
+    /// that refers to the binder depth.
+    ///
+    /// Example: `fun((X) -> X)` where X is a recursive type variable.
+    RecursiveVar {
+        /// De Bruijn index pointing to the enclosing recursive binder.
+        id: u32,
+        /// Optional upper bound (for bounded quantification).
+        bound: Option<Box<IRType>>,
+    },
+
+    // ── Dynamic type (gradual typing) ──────────────────────────────────
+    /// The dynamic type — an explicitly opted-out type that allows any
+    /// value but carries a runtime check obligation.  Used for gradual
+    /// typing integration where some terms are not statically typed.
+    ///
+    /// Unlike `Any` (which is the top of the lattice and carries no
+    /// runtime cost), `Dynamic` generates a runtime type check at the
+    /// boundary between statically-typed and dynamically-typed code.
+    Dynamic,
+
+    // ── Speculative type guard ─────────────────────────────────────────
+    /// A speculative type assumption used for guard-based specialization.
+    /// The compiler generates fast-path code assuming this type, with a
+    /// deoptimization fallback if the guard fails.
+    ///
+    /// This is NOT a type in the set-theoretic sense — it is a
+    /// *speculative annotation* that the optimizer uses to decide
+    /// whether to emit specialized code.
+    Speculative {
+        /// The assumed type (what the fast path assumes).
+        assumed: Box<IRType>,
+        /// The actual type (what the value could actually be).
+        actual: Box<IRType>,
+        /// The guard instruction that validates this assumption.
+        guard: SpeculativeGuard,
+    },
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -253,6 +292,66 @@ pub enum ConstantValue {
     False,
     /// A specific float value
     Float(u64), // bit pattern for f64
+}
+
+/// Speculative guard kinds — describe what runtime check validates
+/// a speculative type assumption.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SpeculativeGuard {
+    /// Guard that a value is a specific immediate type (integer, atom, etc.)
+    IsImmediate(Box<TypeKind>),
+    /// Guard that a value is a specific composite type (tuple, list, etc.)
+    IsComposite(Box<TypeKind>),
+    /// Guard that a stable tuple has a specific shape (element types)
+    StableTupleShape {
+        /// Expected element types
+        element_types: Vec<IRType>,
+    },
+    /// Guard that a map has a specific shape (keys)
+    MapShapeKeys {
+        /// Expected keys
+        keys: Vec<u32>,
+    },
+    /// Guard that a value is a specific constant
+    IsConstant(ConstantValue),
+    /// Guard that a value belongs to a union of types
+    IsInUnion {
+        /// The union alternatives
+        alternatives: Vec<IRType>,
+    },
+    /// Guard for tensor dtype and shape
+    TensorSpec {
+        /// Expected dtype
+        dtype: TensorDtype,
+        /// Expected shape (None = don't check this dimension)
+        shape: Vec<Option<u64>>,
+    },
+    /// No guard needed — the assumption is trivially true
+    Trivial,
+}
+
+impl SpeculativeGuard {
+    /// Check if this guard is trivially satisfied (no runtime check needed).
+    pub fn is_trivial(&self) -> bool {
+        matches!(self, SpeculativeGuard::Trivial)
+    }
+
+    /// Get the cost of this guard at runtime (abstract cost units).
+    /// Used by the optimizer to decide whether specialization is worthwhile.
+    pub fn cost(&self) -> u32 {
+        match self {
+            SpeculativeGuard::Trivial => 0,
+            SpeculativeGuard::IsImmediate(_) => 1,
+            SpeculativeGuard::IsConstant(_) => 1,
+            SpeculativeGuard::IsComposite(_) => 2,
+            SpeculativeGuard::StableTupleShape { element_types } => 2 + element_types.len() as u32,
+            SpeculativeGuard::MapShapeKeys { keys } => 2 + keys.len() as u32,
+            SpeculativeGuard::IsInUnion { alternatives } => alternatives.len() as u32,
+            SpeculativeGuard::TensorSpec { shape, .. } => {
+                3 + shape.iter().filter(|d| d.is_some()).count() as u32
+            }
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -539,6 +638,19 @@ impl IRType {
                 IRType::new(TypeKind::Difference(Box::new(joined), b.clone()))
             }
 
+            // Dynamic type: dynamic | A = Any (dynamic is like Any but with runtime cost)
+            (TypeKind::Dynamic, _) | (_, TypeKind::Dynamic) => IRType::new(TypeKind::Any),
+
+            // Recursive variables: conservative — widen to bound or Any
+            (TypeKind::RecursiveVar { bound: Some(b), .. }, _) => (*b).join(other),
+            (_, TypeKind::RecursiveVar { bound: Some(b), .. }) => self.join((*b).as_ref()),
+            (TypeKind::RecursiveVar { bound: None, .. }, _)
+            | (_, TypeKind::RecursiveVar { bound: None, .. }) => IRType::new(TypeKind::Any),
+
+            // Speculative types: join the actual types (conservative)
+            (TypeKind::Speculative { actual, .. }, _) => (*actual).join(other),
+            (_, TypeKind::Speculative { actual, .. }) => self.join((*actual).as_ref()),
+
             // Default: fall back to Any
             _ => IRType::new(TypeKind::Any),
         }
@@ -805,6 +917,45 @@ impl IRType {
                 IRType::new(TypeKind::Difference(Box::new(met), b.clone()))
             }
 
+            // Dynamic type: dynamic ∩ A = A (but with runtime check)
+            (TypeKind::Dynamic, t) | (t, TypeKind::Dynamic) => IRType::new(t.clone()),
+
+            // Recursive variables: meet bounds
+            (
+                TypeKind::RecursiveVar {
+                    bound: Some(b1), ..
+                },
+                TypeKind::RecursiveVar {
+                    bound: Some(b2), ..
+                },
+            ) => b1.meet(b2),
+            (TypeKind::RecursiveVar { bound: Some(b), .. }, other)
+            | (other, TypeKind::RecursiveVar { bound: Some(b), .. }) => {
+                (*b).meet(&IRType::new(other.clone()))
+            }
+            (TypeKind::RecursiveVar { bound: None, .. }, _)
+            | (_, TypeKind::RecursiveVar { bound: None, .. }) => IRType::new(TypeKind::Bottom),
+
+            // Speculative types: meet the assumed types (optimistic)
+            (
+                TypeKind::Speculative {
+                    assumed: a1,
+                    actual: _,
+                    guard: _,
+                },
+                TypeKind::Speculative {
+                    assumed: a2,
+                    actual: _,
+                    guard: _,
+                },
+            ) => IRType::new(TypeKind::Speculative {
+                assumed: Box::new((*a1).meet(a2.as_ref())),
+                actual: Box::new(self.join(other)),
+                guard: SpeculativeGuard::Trivial,
+            }),
+            (TypeKind::Speculative { assumed, .. }, _) => (*assumed).meet(other),
+            (_, TypeKind::Speculative { assumed, .. }) => self.meet((*assumed).as_ref()),
+
             // Generic fallback: check subtyping
             _ => {
                 if self.contains(other) {
@@ -819,19 +970,23 @@ impl IRType {
     }
 
     fn contains_constant(&self, c: &ConstantValue) -> bool {
-        match (&self.kind, c) {
-            (TypeKind::SmallInt, ConstantValue::Int(_)) => true,
-            (TypeKind::NonNegInt, ConstantValue::Int(i)) => *i >= 0,
-            (TypeKind::Int64, ConstantValue::Int(_)) => true,
-            (TypeKind::Atom, ConstantValue::Atom(_)) => true,
-            (TypeKind::Boolean, ConstantValue::True)
-            | (TypeKind::Boolean, ConstantValue::False) => true,
-            (TypeKind::Nil, ConstantValue::Nil) => true,
-            (TypeKind::Float, ConstantValue::Float(_)) => true,
-            (TypeKind::Any, _) => true,
-            (TypeKind::Union(a, b), _) => {
-                a.as_ref().contains_constant(c) || b.as_ref().contains_constant(c)
-            }
+        Self::contains_constant_kind(&self.kind, c)
+    }
+
+    fn contains_constant_kind(kind: &TypeKind, c: &ConstantValue) -> bool {
+        match kind {
+            TypeKind::SmallInt => matches!(c, ConstantValue::Int(_)),
+            TypeKind::NonNegInt => matches!(c, ConstantValue::Int(i) if *i >= 0),
+            TypeKind::Int64 => matches!(c, ConstantValue::Int(_)),
+            TypeKind::Atom => matches!(c, ConstantValue::Atom(_)),
+            TypeKind::Boolean => matches!(c, ConstantValue::True | ConstantValue::False),
+            TypeKind::Nil => matches!(c, ConstantValue::Nil),
+            TypeKind::Float => matches!(c, ConstantValue::Float(_)),
+            TypeKind::Any => true,
+            TypeKind::Dynamic => true,
+            TypeKind::Union(a, b) => a.contains_constant(c) || b.contains_constant(c),
+            TypeKind::RecursiveVar { .. } => false,
+            TypeKind::Speculative { .. } => false,
             _ => false,
         }
     }
@@ -976,6 +1131,20 @@ impl IRType {
                 a.contains(&c_ty) && c_ty.meet(&*b).kind == TypeKind::Bottom
             }
 
+            // Dynamic type: dynamic contains everything (like Any, but with runtime check)
+            (TypeKind::Dynamic, _) => true,
+
+            // Recursive variables: check against bound
+            (TypeKind::RecursiveVar { bound: Some(b), .. }, other) => {
+                b.as_ref().contains(&IRType::new(other.clone()))
+            }
+            (TypeKind::RecursiveVar { bound: None, .. }, _) => false,
+
+            // Speculative types: the assumed type must contain the other
+            (TypeKind::Speculative { assumed, .. }, other) => {
+                assumed.as_ref().contains(&IRType::new(other.clone()))
+            }
+
             _ => false,
         }
     }
@@ -1045,6 +1214,12 @@ impl IRType {
             | TypeKind::Int64
             | TypeKind::Float => true,
             TypeKind::Tuple { .. } | TypeKind::Cons | TypeKind::List => false,
+            TypeKind::Constant(_) => true,
+            TypeKind::RecursiveVar { bound, .. } => {
+                bound.as_ref().map_or(false, |b| b.is_immutable())
+            }
+            TypeKind::Speculative { assumed, .. } => assumed.is_immutable(),
+            TypeKind::Dynamic => false,
             _ => false,
         }
     }
@@ -1392,6 +1567,22 @@ impl fmt::Display for IRType {
                 ConstantValue::False => write!(f, "const(false)"),
                 ConstantValue::Float(bits) => write!(f, "const(float:{})", bits),
             },
+            TypeKind::RecursiveVar { id, bound } => match bound {
+                Some(b) => write!(f, "rec<{id}: {b}>"),
+                None => write!(f, "rec<{id}>"),
+            },
+            TypeKind::Dynamic => write!(f, "dynamic"),
+            TypeKind::Speculative {
+                assumed,
+                actual,
+                guard,
+            } => {
+                if guard.is_trivial() {
+                    write!(f, "spec<{assumed}>")
+                } else {
+                    write!(f, "spec<{assumed} | {actual}, {:?}>", guard)
+                }
+            }
         }
     }
 }
@@ -1760,7 +1951,7 @@ mod tests {
         // because subtract can't prove the Difference contains Cons.
         // This is expected — subtract is a conservative approximation.
         let list = IRType::new(TypeKind::List);
-        let uncovered = list.uncovered_by(&vec![
+        let _uncovered = list.uncovered_by(&vec![
             IRType::new(TypeKind::Nil),
             IRType::new(TypeKind::Cons),
         ]);
@@ -1944,5 +2135,204 @@ mod tests {
         assert!(IRType::new(TypeKind::SmallInt).contains_constant(&ConstantValue::Int(-5)));
         assert!(IRType::new(TypeKind::NonNegInt).contains_constant(&ConstantValue::Int(0)));
         assert!(!IRType::new(TypeKind::NonNegInt).contains_constant(&ConstantValue::Int(-1)));
+    }
+
+    // ── Dynamic type tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_dynamic_type_join() {
+        // dynamic | A = Any
+        let dynamic = IRType::new(TypeKind::Dynamic);
+        let smallint = IRType::new(TypeKind::SmallInt);
+        let joined = dynamic.join(&smallint);
+        assert!(joined.is_any());
+    }
+
+    #[test]
+    fn test_dynamic_type_meet() {
+        // dynamic ∩ A = A
+        let dynamic = IRType::new(TypeKind::Dynamic);
+        let smallint = IRType::new(TypeKind::SmallInt);
+        let met = dynamic.meet(&smallint);
+        assert!(matches!(met.kind, TypeKind::SmallInt));
+    }
+
+    #[test]
+    fn test_dynamic_type_contains() {
+        // dynamic contains everything
+        let dynamic = IRType::new(TypeKind::Dynamic);
+        assert!(dynamic.contains(&IRType::new(TypeKind::SmallInt)));
+        assert!(dynamic.contains(&IRType::new(TypeKind::Any)));
+        assert!(dynamic.contains(&IRType::new(TypeKind::Bottom)));
+    }
+
+    // ── Recursive type tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_recursive_var_join_with_bound() {
+        // rec<X: SmallInt> | NonNegInt = SmallInt | NonNegInt = SmallInt
+        let rec = IRType::new(TypeKind::RecursiveVar {
+            id: 0,
+            bound: Some(Box::new(IRType::new(TypeKind::SmallInt))),
+        });
+        let nonneg = IRType::new(TypeKind::NonNegInt);
+        let joined = rec.join(&nonneg);
+        assert!(matches!(joined.kind, TypeKind::SmallInt));
+    }
+
+    #[test]
+    fn test_recursive_var_join_unbound() {
+        // rec<X> | Anything = Any
+        let rec = IRType::new(TypeKind::RecursiveVar { id: 0, bound: None });
+        let joined = rec.join(&IRType::new(TypeKind::SmallInt));
+        assert!(joined.is_any());
+    }
+
+    #[test]
+    fn test_recursive_var_meet_with_bound() {
+        // rec<X: SmallInt> ∩ NonNegInt = SmallInt ∩ NonNegInt = NonNegInt
+        let rec = IRType::new(TypeKind::RecursiveVar {
+            id: 0,
+            bound: Some(Box::new(IRType::new(TypeKind::SmallInt))),
+        });
+        let nonneg = IRType::new(TypeKind::NonNegInt);
+        let met = rec.meet(&nonneg);
+        assert!(matches!(met.kind, TypeKind::NonNegInt));
+    }
+
+    #[test]
+    fn test_recursive_var_contains_with_bound() {
+        // rec<X: SmallInt> contains NonNegInt (because SmallInt contains NonNegInt)
+        let rec = IRType::new(TypeKind::RecursiveVar {
+            id: 0,
+            bound: Some(Box::new(IRType::new(TypeKind::SmallInt))),
+        });
+        assert!(rec.contains(&IRType::new(TypeKind::NonNegInt)));
+        assert!(!rec.contains(&IRType::new(TypeKind::Float)));
+    }
+
+    // ── Speculative type tests ────────────────────────────────────────
+
+    #[test]
+    fn test_speculative_join_uses_actual() {
+        // spec<SmallInt | Any>.join(Atom) = Any.join(Atom) = Any
+        let spec = IRType::new(TypeKind::Speculative {
+            assumed: Box::new(IRType::new(TypeKind::SmallInt)),
+            actual: Box::new(IRType::new(TypeKind::Any)),
+            guard: SpeculativeGuard::Trivial,
+        });
+        let atom = IRType::new(TypeKind::Atom);
+        let joined = spec.join(&atom);
+        assert!(joined.is_any());
+    }
+
+    #[test]
+    fn test_speculative_meet_uses_assumed() {
+        // spec<SmallInt | Any>.meet(NonNegInt) = SmallInt.meet(NonNegInt) = NonNegInt
+        let spec = IRType::new(TypeKind::Speculative {
+            assumed: Box::new(IRType::new(TypeKind::SmallInt)),
+            actual: Box::new(IRType::new(TypeKind::Any)),
+            guard: SpeculativeGuard::Trivial,
+        });
+        let nonneg = IRType::new(TypeKind::NonNegInt);
+        let met = spec.meet(&nonneg);
+        assert!(matches!(met.kind, TypeKind::NonNegInt));
+    }
+
+    #[test]
+    fn test_speculative_contains_uses_assumed() {
+        // spec<SmallInt | Any> contains NonNegInt (because SmallInt contains NonNegInt)
+        let spec = IRType::new(TypeKind::Speculative {
+            assumed: Box::new(IRType::new(TypeKind::SmallInt)),
+            actual: Box::new(IRType::new(TypeKind::Any)),
+            guard: SpeculativeGuard::Trivial,
+        });
+        assert!(spec.contains(&IRType::new(TypeKind::NonNegInt)));
+        assert!(!spec.contains(&IRType::new(TypeKind::Float)));
+    }
+
+    #[test]
+    fn test_speculative_type_display() {
+        let spec = IRType::new(TypeKind::Speculative {
+            assumed: Box::new(IRType::new(TypeKind::SmallInt)),
+            actual: Box::new(IRType::new(TypeKind::Any)),
+            guard: SpeculativeGuard::Trivial,
+        });
+        let display = format!("{}", spec);
+        assert!(display.contains("spec"));
+        assert!(display.contains("smallint"));
+    }
+
+    #[test]
+    fn test_dynamic_type_display() {
+        let dynamic = IRType::new(TypeKind::Dynamic);
+        assert_eq!(format!("{}", dynamic), "dynamic");
+    }
+
+    #[test]
+    fn test_recursive_var_display() {
+        let rec = IRType::new(TypeKind::RecursiveVar {
+            id: 0,
+            bound: Some(Box::new(IRType::new(TypeKind::SmallInt))),
+        });
+        let display = format!("{}", rec);
+        assert!(display.contains("rec"));
+        assert!(display.contains("0"));
+
+        let rec_unbound = IRType::new(TypeKind::RecursiveVar { id: 1, bound: None });
+        let display = format!("{}", rec_unbound);
+        assert!(display.contains("rec"));
+        assert!(display.contains("1"));
+    }
+
+    // ── SpeculativeGuard tests ────────────────────────────────────────
+
+    #[test]
+    fn test_guard_costs() {
+        assert_eq!(SpeculativeGuard::Trivial.cost(), 0);
+        assert_eq!(
+            SpeculativeGuard::IsImmediate(Box::new(TypeKind::SmallInt)).cost(),
+            1
+        );
+        assert_eq!(
+            SpeculativeGuard::IsComposite(Box::new(TypeKind::Tuple { arity: 2 })).cost(),
+            2
+        );
+        assert_eq!(
+            SpeculativeGuard::StableTupleShape {
+                element_types: vec![IRType::new(TypeKind::SmallInt); 3]
+            }
+            .cost(),
+            5
+        );
+        assert_eq!(
+            SpeculativeGuard::MapShapeKeys {
+                keys: vec![1, 2, 3]
+            }
+            .cost(),
+            5
+        );
+        assert_eq!(
+            SpeculativeGuard::IsInUnion {
+                alternatives: vec![IRType::new(TypeKind::SmallInt); 4]
+            }
+            .cost(),
+            4
+        );
+        assert_eq!(
+            SpeculativeGuard::TensorSpec {
+                dtype: TensorDtype::F32,
+                shape: vec![Some(1), Some(224), None]
+            }
+            .cost(),
+            5 // 3 + 2 concrete dimensions
+        );
+    }
+
+    #[test]
+    fn test_guard_trivial() {
+        assert!(SpeculativeGuard::Trivial.is_trivial());
+        assert!(!SpeculativeGuard::IsImmediate(Box::new(TypeKind::SmallInt)).is_trivial());
+        assert!(!SpeculativeGuard::IsConstant(ConstantValue::Int(0)).is_trivial());
     }
 }

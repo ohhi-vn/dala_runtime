@@ -25,6 +25,9 @@ pub mod layout;
 pub mod module;
 pub mod opt;
 pub mod type_system;
+pub mod type_system_profiling;
+#[cfg(test)]
+pub mod type_system_tests;
 pub mod value;
 
 // Re-exports
@@ -34,7 +37,7 @@ pub use instruction::{IRInst, IRInstKind, TensorOpKind};
 pub use module::IRModule;
 pub use type_system::{
     ActorLifecycle, ConstantValue, IRType, MessagePriority, NativeField, NativeFieldKind,
-    NativeLayout, NativeResourceKind, TensorDtype, TypeDescriptor,
+    NativeLayout, NativeResourceKind, SpeculativeGuard, TensorDtype, TypeDescriptor,
 };
 pub use value::{IRValue, IRValueId};
 
