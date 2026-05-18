@@ -6,8 +6,15 @@
 //!
 //! Architecture:
 //!   Dala IR -> Cranelift IR -> Machine code
+//!
+//! # Current Status
+//!
+//! The Cranelift backend is being implemented. As a fallback, the
+//! `Interpreter` backend can execute IR directly without native code
+//! generation, enabling end-to-end BEAM bytecode execution today.
 
 pub mod compiler;
+pub mod interpreter;
 pub mod intrinsics;
 pub mod runtime_glue;
 pub mod stack_map;
@@ -15,6 +22,7 @@ pub mod trap_sink;
 
 // Re-exports
 pub use compiler::Compiler;
+pub use interpreter::Interpreter;
 pub use intrinsics::Intrinsic;
 pub use runtime_glue::RuntimeGlue;
 pub use stack_map::StackMapRegistry;
@@ -59,7 +67,7 @@ impl Default for CodegenConfig {
 /// A compiled function ready for execution.
 #[repr(C)]
 pub struct CompiledFunction {
-    /// The native code pointer
+    /// The native code pointer (null when using interpreter)
     pub code_ptr: *const u8,
     /// The size of the compiled code
     pub code_size: usize,
@@ -69,6 +77,10 @@ pub struct CompiledFunction {
     pub frame_size: usize,
     /// Number of spills
     pub spill_count: usize,
+    /// Function name for debugging
+    pub name: String,
+    /// Number of arguments
+    pub arity: u32,
 }
 
 impl CompiledFunction {
@@ -85,26 +97,30 @@ impl CompiledFunction {
 /// A code generator that translates Dala IR to native code.
 pub struct CodeGenerator {
     /// Configuration
-    #[allow(dead_code)]
-    config: CodegenConfig,
+    pub config: CodegenConfig,
+    /// Interpreter fallback for when Cranelift codegen is not available
+    interpreter: Interpreter,
 }
 
 impl CodeGenerator {
     /// Create a new code generator.
     pub fn new(config: CodegenConfig) -> Result<Self, CodegenError> {
-        Ok(Self { config })
+        Ok(Self {
+            config,
+            interpreter: Interpreter::new(),
+        })
     }
 
     /// Compile an IR function to native code.
     ///
-    /// NOTE: This is a stub implementation. Full Cranelift codegen
-    /// requires significant API updates for the current Cranelift version.
+    /// Currently uses the interpreter backend. The Cranelift backend
+    /// will be activated once the IR-to-Cranelift mapping is complete.
     pub fn compile_function(
         &mut self,
         ir_func: &dala_ir::IRFunction,
     ) -> Result<CompiledFunction, CodegenError> {
         log::info!(
-            "Codegen stub: compiling function {} ({} instructions)",
+            "Codegen: compiling function {} ({} instructions)",
             ir_func.full_name(),
             ir_func
                 .blocks
@@ -113,15 +129,9 @@ impl CodeGenerator {
                 .sum::<usize>()
         );
 
-        // Return a null pointer as placeholder
-        // Full implementation would use Cranelift to generate native code
-        Ok(CompiledFunction {
-            code_ptr: std::ptr::null(),
-            code_size: 0,
-            stack_map: None,
-            frame_size: 0,
-            spill_count: 0,
-        })
+        // Use the interpreter to "compile" — it validates the IR and
+        // produces a CompiledFunction that can be executed.
+        self.interpreter.compile_function(ir_func)
     }
 }
 
