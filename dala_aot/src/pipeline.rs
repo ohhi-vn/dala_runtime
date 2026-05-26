@@ -235,7 +235,7 @@ pub fn compile_module(
     })
 }
 
-fn hash_str(s: &str) -> u64 {
+pub(crate) fn hash_str(s: &str) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut h = DefaultHasher::new();
@@ -243,7 +243,7 @@ fn hash_str(s: &str) -> u64 {
     h.finish()
 }
 
-fn build_atom_table(module: &BeamModule) -> HashMap<String, u64> {
+pub(crate) fn build_atom_table(module: &BeamModule) -> HashMap<String, u64> {
     module
         .atoms
         .iter()
@@ -252,7 +252,7 @@ fn build_atom_table(module: &BeamModule) -> HashMap<String, u64> {
         .collect()
 }
 
-fn count_ir_instructions(module: &IRModule) -> usize {
+pub(crate) fn count_ir_instructions(module: &IRModule) -> usize {
     module
         .function_bodies
         .iter()
@@ -260,11 +260,11 @@ fn count_ir_instructions(module: &IRModule) -> usize {
         .sum()
 }
 
-fn count_function_instructions(func: &IRFunction) -> usize {
+pub(crate) fn count_function_instructions(func: &IRFunction) -> usize {
     func.blocks.iter().map(|b| b.instructions.len()).sum()
 }
 
-fn beam_reg_to_ir(reg: &BeamRegister) -> dala_ir::instruction::Reg {
+pub(crate) fn beam_reg_to_ir(reg: &BeamRegister) -> dala_ir::instruction::Reg {
     match reg {
         BeamRegister::X(n) => dala_ir::instruction::Reg::X(*n),
         BeamRegister::Y(n) => dala_ir::instruction::Reg::Y(*n),
@@ -272,7 +272,7 @@ fn beam_reg_to_ir(reg: &BeamRegister) -> dala_ir::instruction::Reg {
     }
 }
 
-fn translate_beam_function(
+pub(crate) fn translate_beam_function(
     beam_func: &BeamFunction,
     module: u64,
     name_atom: u64,
@@ -304,7 +304,7 @@ fn push_ret(block: &mut dala_ir::function::BasicBlock) {
     }));
 }
 
-fn translate_beam_instruction(
+pub(crate) fn translate_beam_instruction(
     block: &mut dala_ir::function::BasicBlock,
     inst: &BeamInstruction,
     atom_table: &HashMap<String, u64>,

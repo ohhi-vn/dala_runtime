@@ -20,6 +20,9 @@ pub mod runtime_glue;
 pub mod stack_map;
 pub mod trap_sink;
 
+#[cfg(test)]
+mod edge_case_tests;
+
 // Re-exports
 pub use compiler::Compiler;
 pub use interpreter::Interpreter;

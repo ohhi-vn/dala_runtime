@@ -28,6 +28,8 @@ pub mod type_system;
 pub mod type_system_profiling;
 #[cfg(test)]
 pub mod type_system_tests;
+#[cfg(test)]
+mod edge_case_tests;
 pub mod value;
 
 // Re-exports

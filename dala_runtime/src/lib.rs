@@ -21,6 +21,28 @@ pub mod scheduler;
 pub mod term;
 pub mod trap;
 
+// Edge case test modules
+#[cfg(test)]
+mod atom_edge_tests;
+#[cfg(test)]
+mod bif_edge_tests;
+#[cfg(test)]
+mod code_edge_tests;
+#[cfg(test)]
+mod exception_edge_tests;
+#[cfg(test)]
+mod gc_edge_tests;
+#[cfg(test)]
+mod mailbox_edge_tests;
+#[cfg(test)]
+mod memory_edge_tests;
+#[cfg(test)]
+mod process_edge_tests;
+#[cfg(test)]
+mod scheduler_edge_tests;
+#[cfg(test)]
+mod term_edge_tests;
+
 // Re-exports
 pub use atom::AtomTable;
 pub use exception::{Exception, Reason};

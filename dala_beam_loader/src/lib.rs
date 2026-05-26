@@ -72,6 +72,9 @@ impl BeamModule {
     }
 }
 
+#[cfg(test)]
+mod edge_case_tests;
+
 /// Load a BEAM module from a file path.
 pub fn load_beam_file(path: &str) -> Result<BeamModule> {
     let mut reader = BeamReader::from_file(path)?;

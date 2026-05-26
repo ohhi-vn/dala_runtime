@@ -3,6 +3,9 @@
 mod export_table;
 mod hot_code;
 
+#[cfg(test)]
+mod edge_case_tests;
+
 pub use export_table::ExportTable;
 pub use hot_code::HotCodeManager;
 

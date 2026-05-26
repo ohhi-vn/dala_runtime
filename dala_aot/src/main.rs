@@ -12,6 +12,8 @@ use clap::Parser;
 use tracing::{error, info};
 
 mod cli;
+#[cfg(test)]
+mod edge_case_tests;
 mod pipeline;
 
 use cli::{Cli, Commands, CompilationMode, OptLevel};
